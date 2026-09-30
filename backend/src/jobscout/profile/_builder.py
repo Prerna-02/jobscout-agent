@@ -76,19 +76,27 @@ def assemble_profile(
             "Keep them only if you really have them."
         )
 
-    roles = [_to_role(r, today) for r in extraction.roles if _clean(r.title)]
-    unreadable = [r.title for r in roles if r.kind == "job" and not (r.start and r.end)]
+    roles = [_to_role(r, today) for r in extraction.roles if _clean(r.title) or _clean(r.employer)]
+    unreadable = [_label(r) for r in roles if r.kind == "job" and not (r.start and r.end)]
     if unreadable:
         warnings.append(
             f"Dates could not be read for: {', '.join(unreadable)}. "
             "Years of experience may be too low."
         )
 
+    employers = {r.employer.lower() for r in roles if r.employer}
     current_title = _clean(extraction.current_title) or next(
-        (r.title for r in roles if r.is_current), None
+        (r.title for r in roles if r.is_current and r.title), None
     )
+    if current_title and current_title.lower() in employers:
+        current_title = None  # an organisation name is not a job title
     if current_title and matcher.find(current_title) is None:
         warnings.append(f'The title "{current_title}" is not written in your CV word for word.')
+    if roles and not any(r.title for r in roles):
+        warnings.append(
+            "Your CV names organisations but no job titles. Add the roles you are "
+            "looking for at the review step, because the job search starts from them."
+        )
 
     years = total_years(roles)
     return CandidateProfile(
@@ -113,9 +121,12 @@ def assemble_profile(
 def _to_role(raw: Any, today: date) -> Role:
     start = parse_cv_date(raw.start, today=today, is_end=False)
     end = parse_cv_date(raw.end, today=today, is_end=True)
+    title, employer = _clean(raw.title), _clean(raw.employer)
+    if title and employer and title.lower() == employer.lower():
+        title = None  # the model copied the organisation into the title
     return Role(
-        title=_clean(raw.title) or "",
-        employer=_clean(raw.employer),
+        title=title,
+        employer=employer,
         kind=raw.kind,
         start_text=raw.start,
         end_text=raw.end,
@@ -123,6 +134,10 @@ def _to_role(raw: Any, today: date) -> Role:
         end=end,
         is_current=end == today,
     )
+
+
+def _label(role: Role) -> str:
+    return role.title or role.employer or "a role"
 
 
 def _clean(value: str | None) -> str | None:

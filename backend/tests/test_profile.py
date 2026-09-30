@@ -185,3 +185,78 @@ class TestProfileBuilder:
         profile = ProfileBuilder(today=TODAY).build(cv)
         assert "SQL" in profile.confirmed_skills
         assert profile.years_experience and profile.years_experience > 5
+
+
+class TestFactCheckFixes:
+    """Regression tests for skills that are in the CV but were wrongly flagged."""
+
+    def test_skill_merged_from_a_grouped_list(self):
+        # Real case: the CV lists "AWS ECR & ECS (Fargate)", the model returned "AWS ECS (Fargate)".
+        matcher = SkillMatcher("Python, FastAPI, Docker, AWS ECR & ECS (Fargate), CloudWatch, Git")
+        for skill in ["AWS ECS (Fargate)", "ECS Fargate", "ECS", "Elastic Container Service"]:
+            assert matcher.find(skill) is not None, skill
+        assert matcher.find("AWS Lambda") is None
+
+    def test_words_split_by_a_pdf_line_wrap(self):
+        matcher = SkillMatcher("Deployed pipelines on Google Cloud\nPlatform using Dataflow")
+        assert matcher.find("Google Cloud Platform Dataflow") is not None
+
+    def test_words_far_apart_do_not_combine(self):
+        matcher = SkillMatcher("Docker\nline two\nline three\nSwarm intelligence research")
+        assert matcher.find("Docker Swarm") is None
+
+    def test_filler_words_are_ignored(self):
+        matcher = SkillMatcher("Strong communication with clients and vendors")
+        assert matcher.find("Communication skills") is not None
+        assert matcher.find("Negotiation skills") is None
+
+    @pytest.mark.parametrize(
+        ("cv_line", "skill"),
+        [
+            ("Managed accounts in Salesforce CRM", "Customer Relationship Management"),
+            ("Improved search engine optimisation for 12 pages", "SEO"),
+            ("Tracked weekly KPIs for the store", "Key Performance Indicators"),
+            ("Handled POS billing at the front desk", "Point of Sale"),
+            ("Built B2B lead lists", "business-to-business"),
+        ],
+    )
+    def test_business_aliases(self, cv_line, skill):
+        assert SkillMatcher(cv_line).find(skill) is not None
+
+    def test_abbreviations_the_cv_defines_itself(self):
+        cv = "Developing Lightning Web Components (LWC) and Apex triggers"
+        assert SkillMatcher(cv).find("LWC") is not None
+        cv2 = "Ran GTM (Go To Market) planning for launches"
+        assert SkillMatcher(cv2).find("Go-To-Market") is not None
+
+    def test_parentheses_that_are_not_abbreviations_are_ignored(self):
+        from jobscout.profile._factcheck import find_defined_acronyms
+
+        groups = find_defined_acronyms("AWS ECR & ECS (Fargate), Python (Pandas), SQL (MySQL)")
+        assert groups == []
+
+
+class TestRolesWithoutTitles:
+    """Real case: the CV lists 'ApexChamps August 2024 - November 2024' with no position name."""
+
+    @pytest.fixture
+    def cv(self) -> CVDocument:
+        return read_cv(make_docx(SAMPLE_CV))
+
+    def test_company_copied_into_title_is_cleared(self, cv):
+        extraction = _extraction(
+            current_title="ApexChamps",
+            roles=[
+                ExtractedRole(
+                    title="ApexChamps", employer="ApexChamps", start="Aug 2024", end="Nov 2024"
+                ),
+                ExtractedRole(title=None, employer="Trivia Software", kind="internship"),
+            ],
+        )
+        profile = ProfileBuilder(FakeExtractor(extraction).runnable, today=TODAY).build(cv)
+
+        assert profile.current_title is None
+        assert [r.title for r in profile.roles] == [None, None]
+        assert [r.employer for r in profile.roles] == ["ApexChamps", "Trivia Software"]
+        assert profile.years_experience == 0.3
+        assert any("no job titles" in w for w in profile.warnings)
