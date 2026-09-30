@@ -2,7 +2,6 @@
 
 A job search agent that reads your CV first. Upload a CV, review the profile it builds, choose how jobs should be scored, and let a LangGraph agent search real openings, broaden its own query when results are thin, and rank the best matches with evidence. Every step is traced in Langfuse.
 
-Built to learn how **LangGraph**, **LangChain** and **Langfuse** fit together in a real agent.
 
 ## Stack
 
