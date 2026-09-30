@@ -6,8 +6,8 @@ Each phase ends with something you can run, see in Langfuse, and test. Stop at t
 |---|---|---|---|
 | 0 | Repo, settings, LLM gateway, Langfuse wiring, CI | How LangChain runnables, fallbacks and callbacks fit together | Done |
 | 1 | CV intake and fact-checked profile | Structured output, prompt-injection defence, keeping maths out of the LLM | Done |
-| 2 | Job search tool with Redis cache | Wrapping an external API as a safe, cached tool | Next |
-| 3 | The LangGraph agent | State, nodes, conditional edges, the rewrite loop, interrupt and resume | |
+| 2 | Job search tool with Redis cache | Wrapping an external API as a safe, cached tool | Done |
+| 3 | The LangGraph agent | State, nodes, conditional edges, the rewrite loop, interrupt and resume | Next |
 | 4 | Scoring presets and ranking | Embeddings, batched LLM judging, weights you can edit | |
 | 5 | FastAPI backend | Two-request runs, streaming progress, per-user limits | |
 | 6 | Next.js front end | Upload, review, weight editor, results | |
@@ -43,7 +43,9 @@ uv run pytest --live -k live                            # one real Gemini call
 - Were any real skills wrongly flagged? Add them to `ALIAS_GROUPS` in `profile/_factcheck.py`.
 - Are years of experience and seniority right for each CV?
 
-## Phase 2: Job search tool
+## Phase 2: Job search tool (done)
+
+**Try it:** `uv run jobscout search "data analyst in Dubai" --country ae` (run it twice: the second answer comes from Redis).
 
 **Goal:** `jobscout.jobs.JobSearch.search(query) -> SearchResult` hides the JSearch HTTP call, input validation, Redis cache (24 h), timeouts, retries with backoff and a per-run call budget.
 

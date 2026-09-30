@@ -2,21 +2,37 @@
 
 uv run jobscout cv path/to/cv.pdf          # Phase 1a: what the LLM will see (no API key needed)
 uv run jobscout profile path/to/cv.pdf     # Phase 1b: the fact-checked profile, traced in Langfuse
+uv run jobscout search "data analyst in Dubai" --country ae   # Phase 2: real jobs, cached 24 h
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import get_args
+
+from pydantic import ValidationError
 
 from jobscout.cv import CVDocument, CVRejected, read_cv
+from jobscout.jobs import (
+    DatePosted,
+    FilterRules,
+    JobSearch,
+    JSearchError,
+    JSearchNotConfigured,
+    SearchQuery,
+    SearchResult,
+    filter_jobs,
+)
 from jobscout.llm import LLMNotConfigured
 from jobscout.observability import flush, trace_config
 from jobscout.profile import CandidateProfile, ProfileBuilder
 
 EXIT_REJECTED = 2
 EXIT_NOT_CONFIGURED = 3
+EXIT_SEARCH_FAILED = 4
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,8 +46,17 @@ def main(argv: list[str] | None = None) -> int:
     profile_cmd.add_argument("path", type=Path)
     profile_cmd.add_argument("--json", action="store_true", help="Print the profile as JSON")
 
+    search_cmd = commands.add_parser("search", help="Search real job postings (cached for 24 h)")
+    search_cmd.add_argument("text", help='e.g. "data analyst in Dubai"')
+    search_cmd.add_argument("--country", default="us", help="two-letter code, e.g. ae")
+    search_cmd.add_argument("--date", default="week", choices=get_args(DatePosted))
+    search_cmd.add_argument("--remote", action="store_true", help="remote jobs only")
+    search_cmd.add_argument("--json", action="store_true")
+
     args = parser.parse_args(argv)
     _utf8_stdout()
+    if args.command == "search":
+        return _run_search(args)
 
     try:
         cv = read_cv(args.path.read_bytes())
@@ -56,6 +81,53 @@ def main(argv: list[str] | None = None) -> int:
 
     print(profile.model_dump_json(indent=2) if args.json else _format_profile(profile))
     return 0
+
+
+def _run_search(args: argparse.Namespace) -> int:
+    try:
+        query = SearchQuery(
+            text=args.text, country=args.country, date_posted=args.date, remote_only=args.remote
+        )
+    except ValidationError as exc:
+        print(f"Invalid search: {exc.errors()[0]['msg']}", file=sys.stderr)
+        return EXIT_REJECTED
+
+    try:
+        search = JobSearch.from_settings()
+        result = search.search(query, config=trace_config(run_name="search_jobs", tags=["cli"]))
+    except (JSearchNotConfigured, ValueError) as exc:  # ValueError: malformed REDIS_URL
+        print(str(exc), file=sys.stderr)
+        return EXIT_NOT_CONFIGURED
+    except JSearchError as exc:
+        print(exc.message, file=sys.stderr)
+        return EXIT_SEARCH_FAILED
+    finally:
+        flush()
+
+    print(result.model_dump_json(indent=2) if args.json else _format_search(result))
+    return 0
+
+
+def _format_search(result: SearchResult) -> str:
+    filtered = filter_jobs(result.jobs, FilterRules(), now=datetime.now(UTC))
+    q = result.query
+    source = "yes" if result.cache_hit else "no (1 JSearch request used)"
+    lines = [
+        f'{len(filtered.kept)} jobs for "{q.text}" ({q.country}, posted: {q.date_posted})'
+        f"   from cache: {source}",
+        "",
+    ]
+    for i, job in enumerate(filtered.kept, 1):
+        mode = "remote" if job.is_remote else "on-site"
+        details = [job.company, job.location, job.posted_text, mode, job.salary]
+        lines += [
+            f"{i:>2}. {job.title}",
+            f"    {' | '.join(d for d in details if d)}",
+            f"    {job.apply_link}",
+        ]
+    if filtered.dropped:
+        lines += ["", f"Removed: {filtered.dropped}"]
+    return "\n".join(lines)
 
 
 def _print_cv(cv: CVDocument) -> None:

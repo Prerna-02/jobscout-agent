@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,7 +24,11 @@ class Settings(BaseSettings):
     # LLMs: Gemini first, OpenRouter as the last fallback.
     google_api_key: SecretStr | None = None
     gemini_model: str = "gemini-3.8-flash"
+    gemini_second_model: str | None = "gemini-3.7-flash"
     gemini_fallback_model: str = "gemini-3.5-flash-lite"
+    # Retries per Gemini model on 5xx "high demand" errors. Rate limits (429) skip
+    # straight to the next model, because waiting a few seconds doesn't lift a quota.
+    llm_server_error_attempts: int = 3
     openrouter_api_key: SecretStr | None = None
     openrouter_model: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
@@ -33,8 +37,23 @@ class Settings(BaseSettings):
     # Langfuse tracing. Tracing is off when the keys are missing.
     langfuse_public_key: str | None = None
     langfuse_secret_key: SecretStr | None = None
-    langfuse_host: str = "https://cloud.langfuse.com"
+    # Langfuse calls this LANGFUSE_BASE_URL; older docs use LANGFUSE_HOST. Either works.
+    # US region: https://us.cloud.langfuse.com   EU region: https://cloud.langfuse.com
+    langfuse_base_url: str = Field(
+        default="https://cloud.langfuse.com",
+        validation_alias=AliasChoices("LANGFUSE_BASE_URL", "LANGFUSE_HOST"),
+    )
     app_env: str = "dev"
+
+    # Job search (JSearch via OpenWeb Ninja) and its Redis cache.
+    jsearch_api_key: SecretStr | None = None
+    jsearch_base_url: str = "https://api.openwebninja.com/jsearch"
+    jsearch_timeout_seconds: float = 15.0
+    jsearch_max_calls_per_run: int = 4
+    # The free plan stops at 200 requests a month; keep a margin for manual testing.
+    jsearch_monthly_limit: int = 190
+    redis_url: SecretStr | None = None
+    search_cache_ttl_seconds: int = 24 * 60 * 60
 
     # CV intake limits. Vercel rejects request bodies above 4.5 MB.
     cv_max_bytes: int = 4 * 1024 * 1024

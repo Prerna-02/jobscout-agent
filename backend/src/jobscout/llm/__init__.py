@@ -5,7 +5,7 @@
     result = extractor.invoke(messages, config=trace_config(...))
 
 Callers ask for a schema and get a validated object back. Provider choice,
-fallback order (Gemini Flash -> Flash-Lite -> OpenRouter), retries and timeouts
+fallback order (Gemini 3.8 Flash -> 3.7 Flash -> Flash-Lite -> OpenRouter), retries and timeouts
 stay in here, so swapping a model never touches agent code.
 """
 
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import TypeVar
 
+from google.genai.errors import ServerError
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.runnables import Runnable
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -35,15 +36,15 @@ def structured_llm(
 ) -> Runnable[LanguageModelInput, SchemaT]:
     """A runnable that returns `schema` instances, trying each configured model in turn.
 
-    A provider error, rate limit or schema-invalid reply moves on to the next model.
-    Each model makes a single attempt (no internal retries): on free tiers a
-    rate-limited model rarely recovers within seconds, so falling back is faster.
+    Each Gemini model is retried on server errors (503 "high demand"), then any
+    remaining error, rate limit or schema-invalid reply moves on to the next model.
     """
     s = settings or get_settings()
     candidates: list[Runnable[LanguageModelInput, SchemaT]] = []
 
     if _is_set(s.google_api_key):
-        for model in dict.fromkeys([s.gemini_model, s.gemini_fallback_model]):
+        models = [s.gemini_model, s.gemini_second_model, s.gemini_fallback_model]
+        for model in dict.fromkeys(m for m in models if m):
             # Temperature is left unset on purpose: Gemini 3 models are tuned for
             # their default sampling and the integration applies it.
             chat = ChatGoogleGenerativeAI(
@@ -52,9 +53,14 @@ def structured_llm(
                 max_retries=1,  # 1 means "no retries" in the Google SDK
                 request_timeout=s.llm_timeout_seconds,
             )
-            candidates.append(
-                chat.with_structured_output(schema).with_config(run_name=f"gemini/{model}")
+            structured = chat.with_structured_output(schema).with_retry(
+                # 5xx only: Google's "model is experiencing high demand" usually clears
+                # within seconds, and the first-choice model is worth a short wait.
+                retry_if_exception_type=(ServerError,),
+                stop_after_attempt=s.llm_server_error_attempts,
+                wait_exponential_jitter=True,
             )
+            candidates.append(structured.with_config(run_name=f"gemini/{model}"))
 
     if _is_set(s.openrouter_api_key) and s.openrouter_model:
         chat_or = ChatOpenAI(
