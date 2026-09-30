@@ -80,7 +80,7 @@ def _format_profile(p: CandidateProfile) -> str:
         "",
         "Roles:",
         *[
-            f"  - {r.title}{f' @ {r.employer}' if r.employer else ''} ({r.kind}) "
+            f"  - {r.title or '(no title)'}{f' @ {r.employer}' if r.employer else ''} ({r.kind}) "
             f"{r.start_text or '?'} -> {r.end_text or '?'}"
             for r in p.roles
         ],

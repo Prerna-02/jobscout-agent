@@ -19,7 +19,7 @@ class Skill(BaseModel):
 
 
 class Role(BaseModel):
-    title: str
+    title: str | None = None
     employer: str | None = None
     kind: RoleKind = "job"
     start_text: str | None = None
