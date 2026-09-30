@@ -16,7 +16,7 @@ def test_no_keys_raises_a_helpful_error():
         structured_llm(ProfileExtraction, settings=_settings(google_api_key=""))
 
 
-def test_fallback_order_gemini_then_lite_then_openrouter():
+def test_fallback_order_gemini_38_then_37_then_lite_then_openrouter():
     chain = structured_llm(
         ProfileExtraction,
         settings=_settings(
@@ -29,6 +29,7 @@ def test_fallback_order_gemini_then_lite_then_openrouter():
     names = [chain.runnable.config["run_name"], *(f.config["run_name"] for f in chain.fallbacks)]
     assert names == [
         "gemini/gemini-3.8-flash",
+        "gemini/gemini-3.7-flash",
         "gemini/gemini-3.5-flash-lite",
         "openrouter/some/model:free",
     ]
@@ -44,3 +45,12 @@ def test_trace_config_without_langfuse_keys_has_no_callbacks():
     assert "callbacks" not in config
     assert config["metadata"]["langfuse_session_id"] == "abc"
     assert config["metadata"]["langfuse_tags"] == ["env:dev", "cli"]
+
+
+def test_langfuse_region_url_accepts_both_names(monkeypatch):
+    monkeypatch.setenv("LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com")
+    assert Settings(_env_file=None).langfuse_base_url == "https://us.cloud.langfuse.com"
+
+    monkeypatch.delenv("LANGFUSE_BASE_URL")
+    monkeypatch.setenv("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
+    assert Settings(_env_file=None).langfuse_base_url == "https://us.cloud.langfuse.com"
