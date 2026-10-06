@@ -10,9 +10,9 @@ Each package under `backend/src/jobscout/` exposes a small interface from its `_
 | `jobscout.profile` | `ProfileBuilder().build(cv) -> CandidateProfile` | Prompt, structured output, injection defence, skill fact-check with aliases, date parsing, years and seniority |
 | `jobscout.llm` | `structured_llm(Schema) -> Runnable` | Providers, fallback order, retries, timeouts |
 | `jobscout.observability` | `trace_config(...)`, `flush()` | Langfuse client, callback handler, masking, "off when no keys" |
-| `jobscout.jobs` *(Phase 2)* | `JobSearch.search(query)` | JSearch HTTP, validation, Redis cache, retries, call budget |
+| `jobscout.jobs` | `JobSearch.search(query)` | JSearch HTTP, validation, Redis cache, retries, call budget |
 | `jobscout.scoring` *(Phase 4)* | `score_jobs(profile, jobs, rubric)` | Embedding shortlist, batching, evidence checks, weighted totals |
-| `jobscout.agent` *(Phase 3)* | `build_graph(checkpointer)` | LangGraph wiring only; each node is a few lines calling a module above |
+| `jobscout.agent` | `JobScoutAgent.start(cv)`, `.resume(run_id, prefs)` | The LangGraph graph, saved runs (Postgres or SQLite), the broadening ladder, thread ids, tracing |
 
 LangGraph nodes stay thin on purpose. The graph shows *order and decisions*; the modules hold *behaviour*, and each module is tested without running the graph.
 

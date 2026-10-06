@@ -54,3 +54,44 @@ def test_langfuse_region_url_accepts_both_names(monkeypatch):
     monkeypatch.delenv("LANGFUSE_BASE_URL")
     monkeypatch.setenv("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
     assert Settings(_env_file=None).langfuse_base_url == "https://us.cloud.langfuse.com"
+
+
+def test_light_tasks_start_with_flash_lite_and_low_thinking():
+    chain = structured_llm(
+        ProfileExtraction, task="light", settings=_settings(google_api_key="test-key")
+    )
+    names = [chain.runnable.config["run_name"], *(f.config["run_name"] for f in chain.fallbacks)]
+    assert names == ["gemini/gemini-3.5-flash-lite", "gemini/gemini-3.8-flash"]
+
+
+def test_afc_notice_is_hidden_but_other_google_warnings_are_not(caplog):
+    import logging
+
+    logger = logging.getLogger("google_genai.models")
+    with caplog.at_level(logging.WARNING, logger="google_genai.models"):
+        logger.warning("Direct use of automatic function calling (AFC) in Models...")
+        logger.warning("Quota almost used up")
+    assert [r.getMessage() for r in caplog.records] == ["Quota almost used up"]
+
+
+def test_usage_summary_splits_thinking_tokens():
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    from jobscout.observability import UsageCounter, usage_summary
+
+    counter = UsageCounter()
+    message = AIMessage(
+        content="",
+        response_metadata={"model_name": "gemini-3.8-flash"},
+        usage_metadata={
+            "input_tokens": 209,
+            "output_tokens": 507,
+            "total_tokens": 716,
+            "output_token_details": {"reasoning": 494},
+        },
+    )
+    counter.on_llm_end(LLMResult(generations=[[ChatGeneration(message=message)]]))
+    assert usage_summary(counter) == {
+        "gemini-3.8-flash": {"input": 209, "output": 507, "thinking": 494, "total": 716}
+    }

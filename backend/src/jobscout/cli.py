@@ -3,6 +3,8 @@
 uv run jobscout cv path/to/cv.pdf          # Phase 1a: what the LLM will see (no API key needed)
 uv run jobscout profile path/to/cv.pdf     # Phase 1b: the fact-checked profile, traced in Langfuse
 uv run jobscout search "data analyst in Dubai" --country ae   # Phase 2: real jobs, cached 24 h
+uv run jobscout start path/to/cv.pdf       # Phase 3: agent builds the profile, then pauses
+uv run jobscout resume <run-id> --title "Data Analyst" --country ae --city Dubai
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from typing import get_args
 
 from pydantic import ValidationError
 
+from jobscout.agent import FinishedRun, JobScoutAgent, PausedRun, RunNotFound, SearchPreferences
 from jobscout.cv import CVDocument, CVRejected, read_cv
 from jobscout.jobs import (
     DatePosted,
@@ -53,10 +56,26 @@ def main(argv: list[str] | None = None) -> int:
     search_cmd.add_argument("--remote", action="store_true", help="remote jobs only")
     search_cmd.add_argument("--json", action="store_true")
 
+    start_cmd = commands.add_parser("start", help="Agent: build the profile, then pause for review")
+    start_cmd.add_argument("path", type=Path)
+
+    resume_cmd = commands.add_parser("resume", help="Agent: confirm preferences and search")
+    resume_cmd.add_argument("run_id")
+    resume_cmd.add_argument("--title", action="append", required=True, help="repeat for up to 3")
+    resume_cmd.add_argument("--country", required=True, help="two-letter code, e.g. ae")
+    resume_cmd.add_argument("--city")
+    resume_cmd.add_argument("--remote", action="store_true")
+    resume_cmd.add_argument("--date", default="week", choices=get_args(DatePosted))
+    resume_cmd.add_argument("--skills", help="comma-separated; default: skills found in the CV")
+
     args = parser.parse_args(argv)
     _utf8_stdout()
     if args.command == "search":
         return _run_search(args)
+    if args.command == "start":
+        return _run_start(args)
+    if args.command == "resume":
+        return _run_resume(args)
 
     try:
         cv = read_cv(args.path.read_bytes())
@@ -81,6 +100,94 @@ def main(argv: list[str] | None = None) -> int:
 
     print(profile.model_dump_json(indent=2) if args.json else _format_profile(profile))
     return 0
+
+
+def _run_start(args: argparse.Namespace) -> int:
+    try:
+        with JobScoutAgent.open() as agent:
+            paused = agent.start(args.path.read_bytes())
+    except CVRejected as exc:
+        print(f"CV rejected ({exc.reason}): {exc.message}", file=sys.stderr)
+        return EXIT_REJECTED
+    except LLMNotConfigured as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_NOT_CONFIGURED
+    print(_format_paused(paused))
+    return 0
+
+
+def _run_resume(args: argparse.Namespace) -> int:
+    skills = [s.strip() for s in args.skills.split(",")] if args.skills else None
+    try:
+        with JobScoutAgent.open() as agent:
+            if skills is None:  # default to the skills the CV really contains
+                skills = agent.saved_profile(args.run_id).confirmed_skills
+            prefs = SearchPreferences(
+                target_titles=args.title,
+                country=args.country,
+                city=args.city,
+                remote_only=args.remote,
+                date_posted=args.date,
+                skills=skills,
+            )
+            result = agent.resume(args.run_id, prefs)
+    except ValidationError as exc:
+        print(f"Invalid preferences: {exc.errors()[0]['msg']}", file=sys.stderr)
+        return EXIT_REJECTED
+    except RunNotFound as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_REJECTED
+    except (JSearchNotConfigured, LLMNotConfigured, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_NOT_CONFIGURED
+    print(_format_finished(result))
+    return 0
+
+
+def _format_paused(paused: PausedRun) -> str:
+    s = paused.suggested
+    titles = ", ".join(s["target_titles"]) or "(none in your CV: add at least one)"
+    return "\n".join(
+        [
+            _format_profile(paused.profile),
+            "",
+            "=" * 60,
+            f"Run {paused.run_id} is paused for your review.",
+            f"Suggested job titles: {titles}",
+            f"Suggested city: {s['city'] or '-'}",
+            "",
+            "Continue with your choices, for example:",
+            f'  uv run jobscout resume {paused.run_id} --title "Data Analyst" --country ae'
+            + (f' --city "{s["city"]}"' if s["city"] else ""),
+        ]
+    )
+
+
+def _format_finished(result: FinishedRun) -> str:
+    lines = [f"Run {result.run_id} finished: {result.outcome.replace('_', ' ')}", "", "Searches:"]
+    for i, search in enumerate(result.searches, 1):
+        status = search.get("error") or (
+            f"found {search['found']}, kept {search.get('kept', 0)}"
+            + (" (cache)" if search.get("cache_hit") else "")
+        )
+        lines.append(
+            f'  {i}. [{search["rung"]}] "{search["text"]}" ({search["date_posted"]}): {status}'
+        )
+    requests = sum(1 for x in result.searches if x.get("cache_hit") is False)
+    cached = sum(1 for x in result.searches if x.get("cache_hit"))
+    tokens = ", ".join(
+        f"{model}: {t['total']:,} tokens ({t['thinking']:,} thinking)"
+        for model, t in result.llm_tokens.items()
+    )
+    lines += [f"JSearch: {requests} request(s), {cached} from cache", f"LLM: {tokens or 'none'}"]
+    lines += ["", f"{len(result.jobs)} jobs:"]
+    for i, job in enumerate(result.jobs, 1):
+        details = [job.company, job.location, job.posted_text]
+        lines += [f"{i:>2}. {job.title}", f"    {' | '.join(d for d in details if d)}"]
+    if result.dropped:
+        lines += ["", f"Removed: {result.dropped}"]
+    lines += [f"! {w}" for w in result.warnings]
+    return "\n".join(lines)
 
 
 def _run_search(args: argparse.Namespace) -> int:

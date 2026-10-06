@@ -1,17 +1,21 @@
 """Model gateway: the one place that knows which LLM providers exist.
 
     from jobscout.llm import structured_llm
-    extractor = structured_llm(MySchema)          # Runnable that returns MySchema
+    extractor = structured_llm(MySchema)                  # careful work: profile, scoring
+    planner = structured_llm(Plan, task="light")          # short, simple answers
     result = extractor.invoke(messages, config=trace_config(...))
 
-Callers ask for a schema and get a validated object back. Provider choice,
-fallback order (Gemini 3.8 Flash -> 3.7 Flash -> Flash-Lite -> OpenRouter), retries and timeouts
-stay in here, so swapping a model never touches agent code.
+Callers say what kind of task it is and get a validated object back. Model
+order, thinking depth, retries and timeouts stay in here.
+
+- "reasoning": Gemini 3.8 Flash -> 3.7 Flash -> Flash-Lite -> OpenRouter
+- "light":     Flash-Lite (low thinking) -> 3.8 Flash (low thinking) -> OpenRouter
 """
 
 from __future__ import annotations
 
-from typing import TypeVar
+import logging
+from typing import Literal, TypeVar
 
 from google.genai.errors import ServerError
 from langchain_core.language_models import LanguageModelInput
@@ -22,28 +26,45 @@ from pydantic import BaseModel, SecretStr
 
 from jobscout.settings import Settings, get_settings
 
-__all__ = ["LLMNotConfigured", "structured_llm"]
+__all__ = ["LLMNotConfigured", "Task", "structured_llm"]
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
+Task = Literal["reasoning", "light"]
 
 
 class LLMNotConfigured(RuntimeError):
     """No provider has credentials. The message says which variables to set."""
 
 
+class _HideAFCNotice(logging.Filter):
+    # LangChain sends our output schema to Gemini as a "function", which makes the
+    # Google SDK print a one-time notice about Automatic Function Calling. Gemini never
+    # runs any of our code here, so the notice is noise.
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "automatic function calling (AFC)" not in record.getMessage()
+
+
+logging.getLogger("google_genai.models").addFilter(_HideAFCNotice())
+
+
 def structured_llm(
-    schema: type[SchemaT], *, settings: Settings | None = None
+    schema: type[SchemaT], *, task: Task = "reasoning", settings: Settings | None = None
 ) -> Runnable[LanguageModelInput, SchemaT]:
     """A runnable that returns `schema` instances, trying each configured model in turn.
 
-    Each Gemini model is retried on server errors (503 "high demand"), then any
-    remaining error, rate limit or schema-invalid reply moves on to the next model.
+    Each Gemini model is retried on server errors (503 "high demand"); any other
+    error, a rate limit, a timeout or a schema-invalid reply moves to the next model.
     """
     s = settings or get_settings()
+    light = task == "light"
+    timeout = s.llm_light_timeout_seconds if light else s.llm_timeout_seconds
     candidates: list[Runnable[LanguageModelInput, SchemaT]] = []
 
     if _is_set(s.google_api_key):
-        models = [s.gemini_model, s.gemini_second_model, s.gemini_fallback_model]
+        if light:  # writing a search phrase doesn't need the strongest model or deep thinking
+            models = [s.gemini_fallback_model, s.gemini_model]
+        else:
+            models = [s.gemini_model, s.gemini_second_model, s.gemini_fallback_model]
         for model in dict.fromkeys(m for m in models if m):
             # Temperature is left unset on purpose: Gemini 3 models are tuned for
             # their default sampling and the integration applies it.
@@ -51,11 +72,11 @@ def structured_llm(
                 model=model,
                 google_api_key=s.google_api_key,
                 max_retries=1,  # 1 means "no retries" in the Google SDK
-                request_timeout=s.llm_timeout_seconds,
+                request_timeout=timeout,
+                thinking_level=s.llm_light_thinking_level if light else None,
             )
             structured = chat.with_structured_output(schema).with_retry(
-                # 5xx only: Google's "model is experiencing high demand" usually clears
-                # within seconds, and the first-choice model is worth a short wait.
+                # 5xx only: "model is experiencing high demand" often clears within seconds.
                 retry_if_exception_type=(ServerError,),
                 stop_after_attempt=s.llm_server_error_attempts,
                 wait_exponential_jitter=True,
@@ -68,7 +89,7 @@ def structured_llm(
             base_url=s.openrouter_base_url,
             api_key=s.openrouter_api_key,
             max_retries=0,
-            timeout=s.llm_timeout_seconds,
+            timeout=timeout,
         )
         # Free OpenRouter models support tool calling far more often than JSON schema mode.
         candidates.append(

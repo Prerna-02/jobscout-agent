@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from typing import Any
 
+from langchain_core.callbacks import UsageMetadataCallbackHandler as UsageCounter
 from langchain_core.runnables import RunnableConfig
 from langfuse import Langfuse
 from langfuse.langchain import CallbackHandler
@@ -21,7 +22,7 @@ from langfuse.langchain import CallbackHandler
 from jobscout.cv import mask_patterns
 from jobscout.settings import get_settings
 
-__all__ = ["flush", "trace_config"]
+__all__ = ["UsageCounter", "flush", "record_scores", "trace_config", "usage_summary"]
 
 
 def trace_config(
@@ -49,6 +50,36 @@ def trace_config(
     if _client() is not None:
         config["callbacks"] = [CallbackHandler()]
     return config
+
+
+def usage_summary(counter: UsageCounter) -> dict[str, dict[str, int]]:
+    """Tokens per model for one run, e.g. {"gemini-3.8-flash": {"input": 209, ...}}."""
+    summary: dict[str, dict[str, int]] = {}
+    for model, usage in counter.usage_metadata.items():
+        details = usage.get("output_token_details") or {}
+        summary[model] = {
+            "input": usage.get("input_tokens", 0),
+            "output": usage.get("output_tokens", 0),
+            "thinking": details.get("reasoning", 0),
+            "total": usage.get("total_tokens", 0),
+        }
+    return summary
+
+
+def record_scores(
+    config: RunnableConfig, scores: Mapping[str, float], *, comment: str | None = None
+) -> None:
+    """Attach numbers to the run's trace (shown in Langfuse's Scores column and charts)."""
+    client = _client()
+    callbacks = config.get("callbacks") or []
+    handler = next((cb for cb in callbacks if isinstance(cb, CallbackHandler)), None)
+    trace_id = handler.last_trace_id if handler else None
+    if client is None or trace_id is None:
+        return
+    for name, value in scores.items():
+        client.create_score(
+            name=name, value=float(value), trace_id=trace_id, data_type="NUMERIC", comment=comment
+        )
 
 
 def flush() -> None:

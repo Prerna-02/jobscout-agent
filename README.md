@@ -17,7 +17,7 @@ A job search agent that reads your CV first. Upload a CV, review the profile it 
 
 ## Status
 
-Phases 0-2 are done: CV intake with redaction, a fact-checked candidate profile, and a cached, quota-safe job search. See [docs/phases.md](docs/phases.md) for the full plan and [docs/architecture.md](docs/architecture.md) for how the code is organised.
+Phases 0-3 are done: CV intake with redaction, a fact-checked profile, a cached job search, and a LangGraph agent that pauses for your review and broadens its own search when results are thin. See [docs/phases.md](docs/phases.md) for the full plan and [docs/architecture.md](docs/architecture.md) for how the code is organised.
 
 ## Quick start
 
@@ -43,6 +43,7 @@ backend/                 Python: agent, modules, API (FastAPI from Phase 5)
     profile/             ProfileBuilder: text -> fact-checked CandidateProfile
     llm/                 structured_llm(): the only place that knows the providers
     jobs/                JobSearch: validated query -> real postings (JSearch + Redis cache)
+    agent/               JobScoutAgent: LangGraph graph, pause/resume, search loop
     observability/       trace_config(): Langfuse wiring and masking
     cli.py               `jobscout` command for trying each phase
   tests/

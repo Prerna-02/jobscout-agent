@@ -6,6 +6,9 @@
 # Private CVs used for manual testing
 samples/private/
 
+# Local agent checkpoints (paused runs)
+.jobscout/
+
 # Python
 __pycache__/
 *.py[cod]

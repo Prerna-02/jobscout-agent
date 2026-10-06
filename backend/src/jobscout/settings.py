@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,11 +29,15 @@ class Settings(BaseSettings):
     gemini_fallback_model: str = "gemini-3.5-flash-lite"
     # Retries per Gemini model on 5xx "high demand" errors. Rate limits (429) skip
     # straight to the next model, because waiting a few seconds doesn't lift a quota.
-    llm_server_error_attempts: int = 3
+    llm_server_error_attempts: int = 2
     openrouter_api_key: SecretStr | None = None
     openrouter_model: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    llm_timeout_seconds: float = 60.0
+    # Seconds to wait for one model answer before moving on. Light tasks (a search
+    # phrase) are short; a 60 s wait there once cost a 2-minute run.
+    llm_timeout_seconds: float = 45.0
+    llm_light_timeout_seconds: float = 15.0
+    llm_light_thinking_level: Literal["minimal", "low", "medium", "high"] = "low"
 
     # Langfuse tracing. Tracing is off when the keys are missing.
     langfuse_public_key: str | None = None
@@ -54,6 +59,13 @@ class Settings(BaseSettings):
     jsearch_monthly_limit: int = 190
     redis_url: SecretStr | None = None
     search_cache_ttl_seconds: int = 24 * 60 * 60
+
+    # Agent (Phase 3). Paused runs are saved to Postgres when DATABASE_URL is set,
+    # otherwise to a local SQLite file so pause/resume works without a database.
+    database_url: SecretStr | None = None
+    checkpoint_sqlite_path: str = ".jobscout/checkpoints.sqlite"
+    agent_min_jobs: int = 10
+    agent_max_rewrites: int = 3
 
     # CV intake limits. Vercel rejects request bodies above 4.5 MB.
     cv_max_bytes: int = 4 * 1024 * 1024

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
 
@@ -90,8 +91,8 @@ class JobSearch:
             )
 
         now = self._clock()
-        self._spend_quota(now)
-        raw_jobs = self._client.search(query.to_params())
+        month_used = self._spend_quota(now)
+        raw_jobs = self._request(query.to_params(), month_used)
         jobs = [job for raw in raw_jobs if (job := normalize_job(raw, now=now))]
 
         # Empty results are cached too: repeating a search that found nothing wastes quota.
@@ -102,7 +103,31 @@ class JobSearch:
         )
         return SearchResult(query=query, jobs=jobs, cache_hit=False, fetched_at=now)
 
-    def _spend_quota(self, now: datetime) -> None:
+    def _request(self, params: dict[str, str], month_used: int | None) -> list[dict[str, Any]]:
+        """Call JSearch inside its own "jsearch_request" step, so Langfuse shows the exact
+        parameters sent, the attempts, the HTTP status and the quota used.
+
+        The step's output is a small summary; the raw jobs (often 30+ KB) are handed
+        back through `received` instead, to keep traces light.
+        """
+        received: list[dict[str, Any]] = []
+
+        def call(sent: dict[str, str]) -> dict[str, Any]:
+            jobs, info = self._client.search(sent)
+            received.extend(jobs)
+            return {
+                "jobs_returned": len(jobs),
+                "attempts": info.attempts,
+                "http_status": info.status,
+                "seconds": round(info.seconds, 2),
+                "requests_used_this_month": month_used,
+                "monthly_limit": self._monthly_limit,
+            }
+
+        RunnableLambda(call, name="jsearch_request").invoke(params)
+        return received
+
+    def _spend_quota(self, now: datetime) -> int | None:
         if self.calls_made >= self._max_calls:
             raise JSearchError(f"This run has already used its {self._max_calls} job searches.")
         used = self._store.incr(f"jobscout:jsearch:calls:{now:%Y-%m}", ttl_seconds=_MONTH_KEY_TTL)
@@ -112,3 +137,4 @@ class JobSearch:
                 "Cached searches still work."
             )
         self.calls_made += 1
+        return used

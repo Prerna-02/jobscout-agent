@@ -134,16 +134,17 @@ class TestNormalize:
 class TestClient:
     def test_sends_key_and_params_to_search_v2(self):
         fake = FakeJSearch(ok())
-        jobs = fake.client().search({"query": "data analyst", "language": "en"})
+        jobs, info = fake.client().search({"query": "data analyst", "language": "en"})
         request = fake.requests[0]
-        assert len(jobs) == 10
+        assert len(jobs) == 10 and (info.attempts, info.status) == (1, 200)
         assert request.url.path == "/jsearch/search-v2"
         assert request.headers["x-api-key"] == "test-key"
         assert request.url.params["language"] == "en"
 
     def test_retries_server_errors_and_timeouts(self):
         fake = FakeJSearch(httpx.Response(503), httpx.ConnectTimeout("slow"), ok())
-        assert len(fake.client().search({})) == 10
+        jobs, info = fake.client().search({})
+        assert len(jobs) == 10 and info.attempts == 3
         assert len(fake.requests) == 3
 
     def test_gives_up_after_three_attempts(self):
@@ -178,6 +179,28 @@ class TestJobSearch:
         assert (first.cache_hit, second.cache_hit) == (False, True)
         assert second.jobs == first.jobs
         assert len(fake.requests) == 1 and search.calls_made == 1
+
+    def test_the_http_call_is_its_own_traced_step(self):
+        from langchain_core.callbacks import BaseCallbackHandler
+
+        class Recorder(BaseCallbackHandler):
+            def __init__(self):
+                self.steps = []
+
+            def on_chain_start(self, serialized, inputs, **kwargs):
+                self.steps.append((kwargs.get("name"), inputs))
+
+            def on_chain_end(self, outputs, **kwargs):
+                self.steps.append(("end", outputs))
+
+        recorder = Recorder()
+        self.make(FakeJSearch(ok())).search(self.QUERY, config={"callbacks": [recorder]})
+        names = [name for name, _ in recorder.steps]
+        assert names[:2] == ["search_jobs", "jsearch_request"]
+        sent = recorder.steps[1][1]
+        assert sent["language"] == "en" and "x-api-key" not in sent  # params, never the key
+        summary = next(out for name, out in recorder.steps if name == "end" and "attempts" in out)
+        assert summary["jobs_returned"] == 10 and summary["requests_used_this_month"] == 1
 
     def test_empty_results_are_cached_too(self):
         fake = FakeJSearch(ok({"status": "OK", "data": {"jobs": []}}))
