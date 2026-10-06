@@ -7,8 +7,8 @@ Each phase ends with something you can run, see in Langfuse, and test. Stop at t
 | 0 | Repo, settings, LLM gateway, Langfuse wiring, CI | How LangChain runnables, fallbacks and callbacks fit together | Done |
 | 1 | CV intake and fact-checked profile | Structured output, prompt-injection defence, keeping maths out of the LLM | Done |
 | 2 | Job search tool with Redis cache | Wrapping an external API as a safe, cached tool | Done |
-| 3 | The LangGraph agent | State, nodes, conditional edges, the rewrite loop, interrupt and resume | Next |
-| 4 | Scoring presets and ranking | Embeddings, batched LLM judging, weights you can edit | |
+| 3 | The LangGraph agent | State, nodes, conditional edges, the rewrite loop, interrupt and resume | Done |
+| 4 | Scoring presets and ranking | Embeddings, batched LLM judging, weights you can edit | Next |
 | 5 | FastAPI backend | Two-request runs, streaming progress, per-user limits | |
 | 6 | Next.js front end | Upload, review, weight editor, results | |
 | 7 | Deploy and evaluate | Vercel, Neon, Upstash, Langfuse datasets | |
@@ -53,7 +53,14 @@ uv run pytest --live -k live                            # one real Gemini call
 
 **Done when:** a repeated search is served from Redis (`cache_hit=true` in Langfuse); invalid queries are rejected before any network call; tests use recorded JSearch responses, not the live API.
 
-## Phase 3: The LangGraph agent
+## Phase 3: The LangGraph agent (done)
+
+**Try it:**
+```bash
+uv run jobscout start ../samples/private/my_cv.pdf      # builds the profile, saves the run, pauses
+uv run jobscout resume <run-id> --title "Data Analyst" --country ae --city Dubai
+```
+Paused runs are saved to Postgres when `DATABASE_URL` is set, otherwise to `backend/.jobscout/checkpoints.sqlite`.
 
 **Goal:** `ingest → extract_profile → confirm_profile (interrupt) → plan_query → search_jobs → filter_dedupe → [rewrite_query ↺ | score]` with a Postgres checkpointer.
 

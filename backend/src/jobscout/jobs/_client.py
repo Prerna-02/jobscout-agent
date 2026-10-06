@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -16,6 +17,15 @@ class JSearchError(RuntimeError):
         super().__init__(message)
         self.message = message
         self.status = status
+
+
+@dataclass(frozen=True)
+class RequestInfo:
+    """How a search request went, for tracing: attempts include retries."""
+
+    attempts: int
+    status: int
+    seconds: float
 
 
 class JSearchClient:
@@ -45,7 +55,8 @@ class JSearchClient:
         )
         self._sleep = sleep
 
-    def search(self, params: dict[str, str]) -> list[dict[str, Any]]:
+    def search(self, params: dict[str, str]) -> tuple[list[dict[str, Any]], RequestInfo]:
+        started = time.monotonic()
         last_error: JSearchError | None = None
         for attempt in range(len(self._RETRY_DELAYS) + 1):
             if attempt:
@@ -61,7 +72,8 @@ class JSearchClient:
                     "The job search service is having problems.", status=response.status_code
                 )
                 continue
-            return _jobs_from(response)
+            info = RequestInfo(attempt + 1, response.status_code, time.monotonic() - started)
+            return _jobs_from(response), info
         assert last_error is not None
         raise last_error
 
