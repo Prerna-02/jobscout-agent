@@ -17,7 +17,7 @@ A job search agent that reads your CV first. Upload a CV, review the profile it 
 
 ## Status
 
-Phases 0-4 are done: CV intake with redaction, a fact-checked profile, a cached job search, a LangGraph agent that pauses for review and broadens its own search, and evidence-based scoring with editable presets. See [docs/phases.md](docs/phases.md) for the full plan and [docs/architecture.md](docs/architecture.md) for how the code is organised.
+Phases 0-5 are done: CV intake with redaction, a fact-checked profile, a cached job search, a LangGraph agent that pauses for review and broadens its own search, a scam check, evidence-based scoring with editable presets, and a FastAPI backend with live progress. See [docs/phases.md](docs/phases.md) for the full plan and [docs/architecture.md](docs/architecture.md) for how the code is organised.
 
 ## Quick start
 
@@ -47,6 +47,7 @@ backend/                 Python: agent, modules, API (FastAPI from Phase 5)
     trust/               scam check: rules for every ad, Claude Haiku for uncertain ones
     scoring/             presets, embedding shortlist, evidence-checked scoring, model comparison
     storage/             shared Redis cache (searches, profiles, embeddings, scores)
+    api/                 FastAPI app: /runs, /runs/{id}/resume (live progress), invite codes, limits
     observability/       trace_config(): Langfuse wiring and masking
     cli.py               `jobscout` command for trying each phase
   tests/

@@ -11,7 +11,7 @@ with "not applicable" criteria, and per-job score caching.
 
 from ._compare import ScorerReport, agreement, compare_scorers
 from ._pricing import PRICES_PER_MTOK, claude_cost
-from ._rubric import PRESETS, Criterion, Rubric, suggest_preset
+from ._rubric import PRESETS, Criterion, Rubric, build_rubric, suggest_preset
 from ._scorer import (
     PROMPT_VERSION,
     BatchAssessment,
@@ -37,6 +37,7 @@ __all__ = [
     "Shortlister",
     "agreement",
     "build_match",
+    "build_rubric",
     "claude_cost",
     "compare_scorers",
     "rank_matches",

@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     scorer_model: str = "claude-sonnet-5"  # chosen after the Sonnet vs Opus comparison
     scorer_effort: Literal["low", "medium", "high"] = "medium"
     scorer_timeout_seconds: float = 120.0
-    scorer_batch_size: int = 5
+    scorer_batch_size: int = 3  # small batches finish sooner and run side by side
     shortlist_size: int = 15
     top_matches: int = 10
     embedding_model: str = "gemini-embedding-2"
@@ -82,6 +82,13 @@ class Settings(BaseSettings):
     trust_model: str = "claude-haiku-4-5"
     trust_cache_ttl_seconds: int = 30 * 24 * 60 * 60
     score_cache_ttl_seconds: int = 7 * 24 * 60 * 60
+
+    # Web API (Phase 5). With invite codes set, every request needs one (X-Invite-Code).
+    api_invite_codes: SecretStr | None = None  # comma-separated
+    api_starts_per_day: int = 20  # CV uploads per user per day
+    api_resumes_per_day: int = 10  # searches per user per day (these spend JSearch and Claude)
+    api_global_resumes_per_day: int = 100  # all users together: protects the API keys
+    cors_origins: str = "http://localhost:3000"  # comma-separated website origins
 
     # CV intake limits. Vercel rejects request bodies above 4.5 MB.
     cv_max_bytes: int = 4 * 1024 * 1024

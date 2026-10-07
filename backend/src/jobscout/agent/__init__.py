@@ -42,12 +42,14 @@ from jobscout.trust import TrustChecker, TrustReport
 from ._graph import AgentDeps, Outcome, build_graph
 from ._planner import QueryPlanner
 from ._preferences import SearchPreferences, resolve_rubric
+from ._progress import Progress, describe_step
 
 __all__ = [
     "AgentDeps",
     "FinishedRun",
     "JobScoutAgent",
     "PausedRun",
+    "Progress",
     "RunNotFound",
     "SearchPreferences",
 ]
@@ -94,12 +96,12 @@ class JobScoutAgent:
         with _checkpointer(s) as saver:
             yield cls(saver, lambda: _default_deps(s))
 
-    def start(self, cv_bytes: bytes) -> PausedRun:
+    def start(self, cv_bytes: bytes, *, user_id: str | None = None) -> PausedRun:
         """Read the CV and build the profile, then pause for review. Raises CVRejected."""
         cv = read_cv(cv_bytes)  # the raw file never enters the saved state
         run_id = uuid.uuid4().hex[:12]
         graph = build_graph(self._deps(), self._checkpointer)
-        config, usage = self._config(run_id, cv.fingerprint, "agent_start")
+        config, usage = self._config(run_id, cv.fingerprint, "agent_start", user_id)
         try:
             graph.invoke(
                 {
@@ -128,56 +130,74 @@ class JobScoutAgent:
             raise RunNotFound(f"No paused run with id '{run_id}'.")
         return CandidateProfile.model_validate(snapshot.values["profile"])
 
-    def resume(self, run_id: str, preferences: SearchPreferences) -> FinishedRun:
-        """Continue a paused run with the user's answers: plan, search, broaden, filter."""
+    def resume(
+        self, run_id: str, preferences: SearchPreferences, *, user_id: str | None = None
+    ) -> FinishedRun:
+        """Continue a paused run with the user's answers and return the final result."""
+        result: FinishedRun | None = None
+        for event in self.resume_events(run_id, preferences, user_id=user_id):
+            if isinstance(event, FinishedRun):
+                result = event
+        assert result is not None
+        return result
+
+    def resume_events(
+        self, run_id: str, preferences: SearchPreferences, *, user_id: str | None = None
+    ) -> Iterator[Progress | FinishedRun]:
+        """Like resume(), but yields a Progress message after each step, then the result.
+
+        Raises RunNotFound before yielding anything if there is no paused run with that id.
+        """
         graph = build_graph(self._deps(), self._checkpointer)
-        probe: RunnableConfig = {"configurable": {"thread_id": run_id}}
-        snapshot = graph.get_state(probe)
+        snapshot = graph.get_state({"configurable": {"thread_id": run_id}})
         if not snapshot.interrupts:
             raise RunNotFound(f"No paused run with id '{run_id}'.")
+        fingerprint = snapshot.values["cv_fingerprint"]
+        return self._resume_stream(graph, run_id, fingerprint, preferences, user_id)
 
-        config, usage = self._config(run_id, snapshot.values["cv_fingerprint"], "agent_resume")
+    def _resume_stream(
+        self,
+        graph: Any,
+        run_id: str,
+        fingerprint: str,
+        preferences: SearchPreferences,
+        user_id: str | None,
+    ) -> Iterator[Progress | FinishedRun]:
+        config, usage = self._config(run_id, fingerprint, "agent_resume", user_id)
         try:
-            graph.invoke(Command(resume=preferences.model_dump(mode="json")), config=config)
+            for update in graph.stream(
+                Command(resume=preferences.model_dump(mode="json")),
+                config=config,
+                stream_mode="updates",
+            ):
+                for node, values in update.items():
+                    message = (
+                        describe_step(node, values or {}) if isinstance(values, dict) else None
+                    )
+                    if message:
+                        yield Progress(node, message)
             state = graph.get_state(config).values
-            tokens = usage_summary(usage)
-            searches = state.get("searches", [])
-            record_scores(
-                config,
-                {
-                    "jobs_found": len(state.get("jobs", [])),
-                    "searches": len(searches),
-                    "jsearch_requests": sum(1 for x in searches if x.get("cache_hit") is False),
-                    "cache_hits": sum(1 for x in searches if x.get("cache_hit")),
-                    "rewrites": state.get("rewrites", 0),
-                    "llm_tokens": _total_tokens(tokens),
-                    "scam_risk_removed": len(state.get("removed_as_risky", [])),
-                    "caution_jobs": sum(
-                        1 for t in state.get("trust", {}).values() if t["level"] == "caution"
-                    ),
-                    **(
-                        {"top_match": state["ranked"][0]["total"] or 0}
-                        if state.get("ranked")
-                        else {}
-                    ),
-                },
-                comment=f"outcome: {state['outcome']}",
-            )
+            result = _finished(run_id, state, usage_summary(usage))
+            record_scores(config, _run_scores(state, result), comment=f"outcome: {result.outcome}")
+            yield result
         finally:
             flush()
-        return FinishedRun(
-            run_id=run_id,
-            outcome=state["outcome"],
-            jobs=[JobPosting.model_validate(job) for job in state.get("jobs", [])],
-            searches=state.get("searches", []),
-            dropped=state.get("dropped", {}),
-            warnings=state.get("warnings", []),
-            llm_tokens=tokens,
-            matches=[JobMatch.model_validate(m) for m in state.get("ranked", [])],
-            rubric_name=state.get("rubric_name"),
-            trust={k: TrustReport.model_validate(v) for k, v in state.get("trust", {}).items()},
-            removed_as_risky=state.get("removed_as_risky", []),
+
+    def status(self, run_id: str) -> PausedRun | FinishedRun:
+        """Where a run stands: waiting for review, or finished with its results."""
+        snapshot = build_graph(self._deps(), self._checkpointer).get_state(
+            {"configurable": {"thread_id": run_id}}
         )
+        if snapshot.interrupts:
+            paused = snapshot.interrupts[0].value
+            return PausedRun(
+                run_id=run_id,
+                profile=CandidateProfile.model_validate(paused["profile"]),
+                suggested=paused["suggested"],
+            )
+        if snapshot.values.get("outcome"):
+            return _finished(run_id, snapshot.values, {})
+        raise RunNotFound(f"No run with id '{run_id}'.")
 
     def scoring_inputs(
         self, run_id: str
@@ -198,16 +218,55 @@ class JobScoutAgent:
         return profile, prefs.model_dump(mode="json"), resolve_rubric(prefs, profile), pairs
 
     @staticmethod
-    def _config(run_id: str, fingerprint: str, name: str) -> tuple[RunnableConfig, UsageCounter]:
+    def _config(
+        run_id: str, fingerprint: str, name: str, user_id: str | None = None
+    ) -> tuple[RunnableConfig, UsageCounter]:
         # Every request of one run shares a Langfuse session, the CV fingerprint.
         config = trace_config(
-            run_name=name, session_id=fingerprint, tags=["agent"], metadata={"run_id": run_id}
+            run_name=name,
+            session_id=fingerprint,
+            user_id=user_id,
+            tags=["agent"],
+            metadata={"run_id": run_id},
         )
         config["configurable"] = {"thread_id": run_id}
         config["recursion_limit"] = _RECURSION_LIMIT
         usage = UsageCounter()  # adds up tokens per model across every LLM call in the run
         config["callbacks"] = [*config.get("callbacks", []), usage]
         return config, usage
+
+
+def _finished(run_id: str, state: dict[str, Any], tokens: dict[str, dict[str, int]]) -> FinishedRun:
+    return FinishedRun(
+        run_id=run_id,
+        outcome=state["outcome"],
+        jobs=[JobPosting.model_validate(job) for job in state.get("jobs", [])],
+        searches=state.get("searches", []),
+        dropped=state.get("dropped", {}),
+        warnings=state.get("warnings", []),
+        llm_tokens=tokens,
+        matches=[JobMatch.model_validate(m) for m in state.get("ranked", [])],
+        rubric_name=state.get("rubric_name"),
+        trust={k: TrustReport.model_validate(v) for k, v in state.get("trust", {}).items()},
+        removed_as_risky=state.get("removed_as_risky", []),
+    )
+
+
+def _run_scores(state: dict[str, Any], result: FinishedRun) -> dict[str, float]:
+    searches = result.searches
+    scores: dict[str, float] = {
+        "jobs_found": len(result.jobs),
+        "searches": len(searches),
+        "jsearch_requests": sum(1 for x in searches if x.get("cache_hit") is False),
+        "cache_hits": sum(1 for x in searches if x.get("cache_hit")),
+        "rewrites": state.get("rewrites", 0),
+        "llm_tokens": _total_tokens(result.llm_tokens),
+        "scam_risk_removed": len(result.removed_as_risky),
+        "caution_jobs": sum(1 for t in result.trust.values() if t.level == "caution"),
+    }
+    if result.matches and result.matches[0].total is not None:
+        scores["top_match"] = result.matches[0].total
+    return scores
 
 
 def _total_tokens(tokens: dict[str, dict[str, int]]) -> int:
