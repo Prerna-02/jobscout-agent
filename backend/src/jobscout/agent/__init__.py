@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -33,11 +34,14 @@ from jobscout.observability import (
     usage_summary,
 )
 from jobscout.profile import CandidateProfile, ProfileBuilder
+from jobscout.scoring import JobMatch, MatchScorer, Rubric, Shortlister
 from jobscout.settings import Settings, get_settings
+from jobscout.storage import open_store
+from jobscout.trust import TrustChecker, TrustReport
 
 from ._graph import AgentDeps, Outcome, build_graph
 from ._planner import QueryPlanner
-from ._preferences import SearchPreferences
+from ._preferences import SearchPreferences, resolve_rubric
 
 __all__ = [
     "AgentDeps",
@@ -71,6 +75,10 @@ class FinishedRun:
     dropped: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     llm_tokens: dict[str, dict[str, int]] = field(default_factory=dict)  # per model
+    matches: list[JobMatch] = field(default_factory=list)  # ranked, best first
+    trust: dict[str, TrustReport] = field(default_factory=dict)  # by job_id
+    removed_as_risky: list[dict[str, str]] = field(default_factory=list)
+    rubric_name: str | None = None
 
 
 class JobScoutAgent:
@@ -143,6 +151,15 @@ class JobScoutAgent:
                     "cache_hits": sum(1 for x in searches if x.get("cache_hit")),
                     "rewrites": state.get("rewrites", 0),
                     "llm_tokens": _total_tokens(tokens),
+                    "scam_risk_removed": len(state.get("removed_as_risky", [])),
+                    "caution_jobs": sum(
+                        1 for t in state.get("trust", {}).values() if t["level"] == "caution"
+                    ),
+                    **(
+                        {"top_match": state["ranked"][0]["total"] or 0}
+                        if state.get("ranked")
+                        else {}
+                    ),
                 },
                 comment=f"outcome: {state['outcome']}",
             )
@@ -156,7 +173,29 @@ class JobScoutAgent:
             dropped=state.get("dropped", {}),
             warnings=state.get("warnings", []),
             llm_tokens=tokens,
+            matches=[JobMatch.model_validate(m) for m in state.get("ranked", [])],
+            rubric_name=state.get("rubric_name"),
+            trust={k: TrustReport.model_validate(v) for k, v in state.get("trust", {}).items()},
+            removed_as_risky=state.get("removed_as_risky", []),
         )
+
+    def scoring_inputs(
+        self, run_id: str
+    ) -> tuple[CandidateProfile, dict[str, Any], Rubric, list[tuple[JobPosting, float | None]]]:
+        """What a finished run scored, so other models can score exactly the same jobs."""
+        values = (
+            build_graph(self._deps(), self._checkpointer)
+            .get_state({"configurable": {"thread_id": run_id}})
+            .values
+        )
+        if not values.get("shortlist"):
+            raise RunNotFound(f"Run '{run_id}' has no scored shortlist (unknown or not finished).")
+        profile = CandidateProfile.model_validate(values["profile"])
+        prefs = SearchPreferences.model_validate(values["preferences"])
+        pairs = [
+            (JobPosting.model_validate(p["job"]), p["similarity"]) for p in values["shortlist"]
+        ]
+        return profile, prefs.model_dump(mode="json"), resolve_rubric(prefs, profile), pairs
 
     @staticmethod
     def _config(run_id: str, fingerprint: str, name: str) -> tuple[RunnableConfig, UsageCounter]:
@@ -190,10 +229,39 @@ def _checkpointer(settings: Settings) -> Iterator[BaseCheckpointSaver]:
 
 
 def _default_deps(settings: Settings) -> AgentDeps:
+    store = open_store(settings)
     return AgentDeps(
-        profile_builder=ProfileBuilder(),
+        profile_builder=ProfileBuilder(
+            store=store, cache_ttl_seconds=settings.profile_cache_ttl_seconds
+        ),
         planner=QueryPlanner(),
         job_search=lambda: JobSearch.from_settings(settings),
+        trust=lambda: TrustChecker(
+            store=store,
+            batch_size=settings.scorer_batch_size,
+            cache_ttl_seconds=settings.trust_cache_ttl_seconds,
+        ),
+        shortlister=lambda: Shortlister(
+            _embeddings(settings),
+            store,
+            model_name=settings.embedding_model,
+            size=settings.shortlist_size,
+        ),
+        scorer=lambda: MatchScorer(
+            store=store,
+            batch_size=settings.scorer_batch_size,
+            job_text_max_chars=settings.job_text_max_chars,
+            cache_ttl_seconds=settings.score_cache_ttl_seconds,
+            cache_namespace=settings.scorer_model,
+        ),
+        top_n=settings.top_matches,
         min_jobs=settings.agent_min_jobs,
         max_rewrites=settings.agent_max_rewrites,
     )
+
+
+def _embeddings(settings: Settings) -> GoogleGenerativeAIEmbeddings | None:
+    key = settings.google_api_key.get_secret_value() if settings.google_api_key else ""
+    if not key:
+        return None
+    return GoogleGenerativeAIEmbeddings(model=settings.embedding_model, google_api_key=key)

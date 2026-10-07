@@ -10,11 +10,11 @@ from typing import Any
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
 
 from jobscout.settings import Settings, get_settings
+from jobscout.storage import KeyValueStore, open_store
 
 from ._client import JSearchClient, JSearchError
 from ._models import JobPosting, SearchQuery, SearchResult
 from ._normalize import normalize_job
-from ._store import KeyValueStore, MemoryStore, RedisStore
 
 logger = logging.getLogger(__name__)
 _MONTH_KEY_TTL = 40 * 24 * 60 * 60  # outlives the month it counts
@@ -60,12 +60,7 @@ class JobSearch:
         api_key = s.jsearch_api_key.get_secret_value() if s.jsearch_api_key else ""
         if not api_key:
             raise JSearchNotConfigured("Set JSEARCH_API_KEY in .env to search for jobs.")
-        redis_url = s.redis_url.get_secret_value() if s.redis_url else ""
-        if redis_url:
-            store: KeyValueStore = RedisStore.from_url(redis_url)
-        else:
-            logger.warning("REDIS_URL is not set: searches are cached in memory only.")
-            store = MemoryStore()
+        store = open_store(s)
         client = JSearchClient(
             api_key, base_url=s.jsearch_base_url, timeout=s.jsearch_timeout_seconds
         )

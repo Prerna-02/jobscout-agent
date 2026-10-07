@@ -111,6 +111,8 @@ def _candidate(prefs: SearchPreferences) -> str:
         f"Top skills: {', '.join(prefs.skills[:8]) or 'not given'}",
         f"City: {prefs.city or 'not given'}",
     ]
+    if prefs.rubric and prefs.rubric.search_hints:  # e.g. the Student preset
+        lines.append(f"Preferred job level: {', '.join(prefs.rubric.search_hints)}")
     return "<candidate>\n" + "\n".join(lines) + "\n</candidate>"
 
 

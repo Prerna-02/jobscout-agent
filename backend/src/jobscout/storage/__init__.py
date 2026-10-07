@@ -1,4 +1,8 @@
-"""Key-value storage for the search cache and the monthly quota counter.
+"""Shared key-value storage: caches (searches, profiles, embeddings, scores) and counters.
+
+    store = open_store()               # Redis when REDIS_URL is set, else in-memory
+    store.get_json(key); store.set_json(key, value, ttl_seconds=...); store.incr(key, ...)
+
 
 Redis in real use, an in-memory dict when REDIS_URL isn't set (and in tests).
 A storage failure must never break a search, so Redis errors are logged and
@@ -17,6 +21,8 @@ from redis.backoff import ExponentialBackoff
 from redis.retry import Retry
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["KeyValueStore", "MemoryStore", "RedisStore", "cache_key", "open_store"]
 
 
 class KeyValueStore(Protocol):
@@ -95,3 +101,23 @@ class MemoryStore:
         expires = self._data[key][0]
         self._data[key] = (expires, current + 1)
         return current + 1
+
+
+def open_store(settings: Any = None) -> KeyValueStore:
+    """Redis when REDIS_URL is set, otherwise an in-memory store for this process."""
+    from jobscout.settings import get_settings
+
+    s = settings or get_settings()
+    redis_url = s.redis_url.get_secret_value() if s.redis_url else ""
+    if redis_url:
+        return RedisStore.from_url(redis_url)
+    logger.warning("REDIS_URL is not set: caches live in memory for this process only.")
+    return MemoryStore()
+
+
+def cache_key(namespace: str, *parts: object) -> str:
+    """A short, stable key from any JSON-able parts, e.g. cache_key("score", job_id, rubric)."""
+    import hashlib
+
+    blob = json.dumps(parts, sort_keys=True, default=str, separators=(",", ":"))
+    return f"jobscout:{namespace}:{hashlib.sha256(blob.encode()).hexdigest()[:32]}"

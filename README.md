@@ -8,7 +8,7 @@ A job search agent that reads your CV first. Upload a CV, review the profile it 
 | Layer | Choice |
 |---|---|
 | Agent | LangGraph (state machine with a self-correcting search loop and a human review step) |
-| LLM | Gemini `gemini-3.8-flash`, falling back to Flash-Lite, then an OpenRouter free model |
+| LLM | Gemini for profiles and search planning; Claude for scoring (Gemini fallback) |
 | Embeddings | Gemini embeddings via `GoogleGenerativeAIEmbeddings` |
 | Jobs | JSearch API |
 | Tracing | Langfuse |
@@ -17,7 +17,7 @@ A job search agent that reads your CV first. Upload a CV, review the profile it 
 
 ## Status
 
-Phases 0-3 are done: CV intake with redaction, a fact-checked profile, a cached job search, and a LangGraph agent that pauses for your review and broadens its own search when results are thin. See [docs/phases.md](docs/phases.md) for the full plan and [docs/architecture.md](docs/architecture.md) for how the code is organised.
+Phases 0-4 are done: CV intake with redaction, a fact-checked profile, a cached job search, a LangGraph agent that pauses for review and broadens its own search, and evidence-based scoring with editable presets. See [docs/phases.md](docs/phases.md) for the full plan and [docs/architecture.md](docs/architecture.md) for how the code is organised.
 
 ## Quick start
 
@@ -44,6 +44,9 @@ backend/                 Python: agent, modules, API (FastAPI from Phase 5)
     llm/                 structured_llm(): the only place that knows the providers
     jobs/                JobSearch: validated query -> real postings (JSearch + Redis cache)
     agent/               JobScoutAgent: LangGraph graph, pause/resume, search loop
+    trust/               scam check: rules for every ad, Claude Haiku for uncertain ones
+    scoring/             presets, embedding shortlist, evidence-checked scoring, model comparison
+    storage/             shared Redis cache (searches, profiles, embeddings, scores)
     observability/       trace_config(): Langfuse wiring and masking
     cli.py               `jobscout` command for trying each phase
   tests/

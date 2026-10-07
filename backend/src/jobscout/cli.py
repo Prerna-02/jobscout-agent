@@ -32,6 +32,9 @@ from jobscout.jobs import (
 from jobscout.llm import LLMNotConfigured
 from jobscout.observability import flush, trace_config
 from jobscout.profile import CandidateProfile, ProfileBuilder
+from jobscout.scoring import PRESETS, JobMatch, Rubric, agreement, compare_scorers
+from jobscout.scoring._scorer import MIN_COVERAGE
+from jobscout.trust import TrustReport
 
 EXIT_REJECTED = 2
 EXIT_NOT_CONFIGURED = 3
@@ -67,6 +70,17 @@ def main(argv: list[str] | None = None) -> int:
     resume_cmd.add_argument("--remote", action="store_true")
     resume_cmd.add_argument("--date", default="week", choices=get_args(DatePosted))
     resume_cmd.add_argument("--skills", help="comma-separated; default: skills found in the CV")
+    resume_cmd.add_argument("--preset", choices=sorted(PRESETS), help="default: fits the profile")
+    resume_cmd.add_argument(
+        "--weight", action="append", default=[], metavar="KEY=N", help="e.g. --weight skills=50"
+    )
+    resume_cmd.add_argument("--rubric", type=Path, help="JSON file with your own criteria")
+
+    compare_cmd = commands.add_parser("compare", help="Score a finished run with several models")
+    compare_cmd.add_argument("run_id")
+    compare_cmd.add_argument(
+        "--models", nargs="+", default=["claude-sonnet-5", "claude-opus-5"], metavar="MODEL"
+    )
 
     args = parser.parse_args(argv)
     _utf8_stdout()
@@ -74,6 +88,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_search(args)
     if args.command == "start":
         return _run_start(args)
+    if args.command == "compare":
+        return _run_compare(args)
     if args.command == "resume":
         return _run_resume(args)
 
@@ -129,6 +145,7 @@ def _run_resume(args: argparse.Namespace) -> int:
                 remote_only=args.remote,
                 date_posted=args.date,
                 skills=skills,
+                rubric=_rubric_from_args(args),
             )
             result = agent.resume(args.run_id, prefs)
     except ValidationError as exc:
@@ -180,14 +197,111 @@ def _format_finished(result: FinishedRun) -> str:
         for model, t in result.llm_tokens.items()
     )
     lines += [f"JSearch: {requests} request(s), {cached} from cache", f"LLM: {tokens or 'none'}"]
-    lines += ["", f"{len(result.jobs)} jobs:"]
-    for i, job in enumerate(result.jobs, 1):
-        details = [job.company, job.location, job.posted_text]
-        lines += [f"{i:>2}. {job.title}", f"    {' | '.join(d for d in details if d)}"]
+    if result.matches:
+        lines += [
+            "",
+            f"Top {len(result.matches)} of {len(result.jobs)} jobs ({result.rubric_name}):",
+        ]
+        lines += _format_matches(result.matches, result.trust)
+    else:
+        lines += ["", f"{len(result.jobs)} jobs:"]
+        for i, job in enumerate(result.jobs, 1):
+            details = [job.company, job.location, job.posted_text]
+            lines += [f"{i:>2}. {job.title}", f"    {' | '.join(d for d in details if d)}"]
+    for risky in result.removed_as_risky:
+        lines.append(
+            f"x Removed as likely scam: {risky['title']} ({risky['company']}): {risky['reason']}"
+        )
     if result.dropped:
         lines += ["", f"Removed: {result.dropped}"]
     lines += [f"! {w}" for w in result.warnings]
     return "\n".join(lines)
+
+
+def _format_matches(
+    matches: list[JobMatch], trust: dict[str, TrustReport] | None = None
+) -> list[str]:
+    lines: list[str] = []
+    for i, m in enumerate(matches, 1):
+        total = f"{m.total:>3}/100" if m.total is not None else "  n/a  "
+        flag = "  (low evidence)" if m.total is not None and m.coverage < MIN_COVERAGE else ""
+        details = " | ".join(d for d in [m.job.company, m.job.location, m.job.posted_text] if d)
+        lines += [f"{i:>2}. {total}  {m.job.title}{flag}", f"           {details}"]
+        for c in m.criteria:
+            if c.score is not None:
+                lines.append(f'           {c.label:<16} {c.score:>2}/10  ad:  "{c.job_quote}"')
+                if c.candidate_quote:
+                    lines.append(f'           {"":<16}        you: "{c.candidate_quote}"')
+            else:
+                lines.append(f"           {c.label:<16}  n/a   {c.note}")
+        if m.missing_skills:
+            lines.append(f"           Missing: {', '.join(m.missing_skills)}")
+        lines.append(f"           {m.summary}  ({m.coverage}% of weights judged)")
+        report = (trust or {}).get(m.job.job_id)
+        if report and report.level == "caution":
+            reasons = "; ".join(dict.fromkeys(f.text for f in report.flags))
+            lines.append(f"           ! Check before applying: {reasons}")
+        elif report and report.good_signs:
+            lines.append(f"           + {report.good_signs[0]}")
+    return lines
+
+
+def _rubric_from_args(args: argparse.Namespace) -> Rubric | None:
+    """--rubric file wins; else --preset with any --weight changes; else None (auto preset)."""
+    if args.rubric:
+        return Rubric.model_validate_json(args.rubric.read_text(encoding="utf-8"))
+    if not args.preset and not args.weight:
+        return None
+    base = PRESETS[args.preset or "professional"]
+    changes = dict(item.split("=", 1) for item in args.weight)
+    unknown = set(changes) - {c.key for c in base.criteria}
+    if unknown:
+        raise ValueError(f"Unknown criteria {sorted(unknown)}; use one of the preset's keys.")
+    criteria = [
+        c.model_copy(update={"weight": int(changes[c.key])}) if c.key in changes else c
+        for c in base.criteria
+    ]
+    if not changes:
+        return base
+    return Rubric(
+        name=f"{base.name} (custom weights)", search_hints=base.search_hints, criteria=criteria
+    )
+
+
+def _run_compare(args: argparse.Namespace) -> int:
+    try:
+        with JobScoutAgent.open() as agent:
+            profile, prefs, rubric, pairs = agent.scoring_inputs(args.run_id)
+        config = trace_config(run_name="compare_scorers", tags=["compare"])
+        reports = compare_scorers(profile, prefs, rubric, pairs, args.models, config=config)
+    except (RunNotFound, LLMNotConfigured) as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_NOT_CONFIGURED
+    finally:
+        flush()
+
+    print(f"Scored the same {len(pairs)} jobs with {len(reports)} models ({rubric.name}):\n")
+    print(f"{'model':<18}{'time':>7}{'input':>9}{'cached':>9}{'output':>9}{'cost':>10}")
+    for r in reports:
+        cost = f"${r.cost_usd:.4f}" if r.cost_usd is not None else "-"
+        print(
+            f"{r.model:<18}{r.seconds:>6}s{r.input_tokens:>9,}{r.cache_read_tokens:>9,}"
+            f"{r.output_tokens:>9,}{cost:>10}" + (f"   ERROR {r.error}" if r.error else "")
+        )
+    ok = [r for r in reports if not r.error]
+    if len(ok) >= 2:
+        a, b = ok[0], ok[1]
+        agree = agreement(a.matches, b.matches)
+        print(
+            f"\nAgreement {a.model} vs {b.model}: {agree['same_top']} of the top {agree['top']} "
+            f"jobs are the same; scores differ by {agree['mean_score_gap']} points on average."
+        )
+        print("\nPer job (total score):")
+        for ma, mb in zip(a.matches, b.matches, strict=True):
+            ta = "-" if ma.total is None else ma.total
+            tb = "-" if mb.total is None else mb.total
+            print(f"  {ta:>4} {tb:>4}  {ma.job.title[:60]}")
+    return 0
 
 
 def _run_search(args: argparse.Namespace) -> int:

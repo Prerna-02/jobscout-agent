@@ -9,9 +9,9 @@ from pydantic import ValidationError
 from jobscout.agent import AgentDeps, JobScoutAgent, RunNotFound, SearchPreferences
 from jobscout.agent._planner import PlannedSearch, QueryPlanner
 from jobscout.jobs import JobSearch, SearchQuery
-from jobscout.jobs._store import MemoryStore
 from jobscout.profile import ProfileBuilder, ProfileExtraction
 from jobscout.profile._extraction import ExtractedRole
+from jobscout.storage import MemoryStore
 
 from .conftest import SAMPLE_CV, make_docx
 from .test_jobs import FakeJSearch
@@ -210,3 +210,96 @@ class TestPreferences:
         data = {**PREFS.model_dump(), **changes}
         with pytest.raises(ValidationError):
             SearchPreferences(**data)
+
+
+class TestScoringInTheGraph:
+    def test_resume_returns_ranked_matches_with_the_chosen_preset(self, cv_bytes):
+        from jobscout.scoring import PRESETS, MatchScorer, Shortlister
+        from jobscout.scoring._scorer import BatchAssessment, CriterionScore, JobAssessment
+        from jobscout.storage import MemoryStore
+
+        from .test_scoring import KeywordEmbeddings
+
+        def score_by_number(messages):
+            # Higher job number -> higher skills score, so the ranking is predictable.
+            ids = [
+                ln.split('"')[1]
+                for ln in messages[1].content.splitlines()
+                if ln.startswith("<job id=")
+            ]
+            return BatchAssessment(
+                jobs=[
+                    JobAssessment(
+                        job_id=i,
+                        scores=[
+                            CriterionScore(
+                                criterion="skills",
+                                score=int(i[2:]) % 11,
+                                job_quote="Analyse data with SQL",
+                            )
+                        ],
+                    )
+                    for i in ids
+                ]
+            )
+
+        fake = FakeJSearch(page(*range(1, 13)))
+        base = make_agent(InMemorySaver(), fake, FakePlannerLLM())._deps
+
+        def deps():
+            d = base()
+            d.shortlister = lambda: Shortlister(
+                KeywordEmbeddings(), MemoryStore(), model_name="m", size=8
+            )
+            d.scorer = lambda: MatchScorer(RunnableLambda(score_by_number))
+            d.top_n = 3
+            return d
+
+        agent = JobScoutAgent(InMemorySaver(), deps)
+        prefs = PREFS.model_copy(update={"rubric": PRESETS["student"]})
+        result = agent.resume(agent.start(cv_bytes).run_id, prefs)
+
+        assert result.rubric_name == "Student"
+        assert len(result.matches) == 3
+        totals = [m.total for m in result.matches]
+        assert totals == sorted(totals, reverse=True)
+        assert all(m.criteria[0].key == "skills" for m in result.matches)
+        _, _, rubric, pairs = agent.scoring_inputs(result.run_id)
+        assert rubric.name == "Student" and len(pairs) == 8
+
+
+def test_scam_postings_are_removed_before_scoring(cv_bytes):
+    from jobscout.scoring import MatchScorer, Shortlister
+    from jobscout.storage import MemoryStore
+    from jobscout.trust import TrustChecker
+
+    from .test_scoring import FakeScorerLLM, KeywordEmbeddings
+    from .test_trust import FakeReviewer
+
+    jobs = [raw_job(i) for i in range(1, 12)]
+    jobs[0]["job_description"] = "Great role. A registration fee of AED 500 is required to start."
+    fake = FakeJSearch(httpx.Response(200, json={"status": "OK", "data": {"jobs": jobs}}))
+    scorer_llm = FakeScorerLLM()
+    base = make_agent(InMemorySaver(), fake, FakePlannerLLM())._deps
+
+    def deps():
+        d = base()
+        d.trust = lambda: TrustChecker(FakeReviewer(verdict="no_concerns", quote=None).runnable)
+        d.shortlister = lambda: Shortlister(KeywordEmbeddings(), MemoryStore(), model_name="m")
+        d.scorer = lambda: MatchScorer(scorer_llm.runnable)
+        return d
+
+    agent = JobScoutAgent(InMemorySaver(), deps)
+    result = agent.resume(agent.start(cv_bytes).run_id, PREFS)
+
+    assert result.removed_as_risky == [
+        {
+            "title": "Analyst role 1",
+            "company": "Company 1",
+            "reason": "The ad asks candidates to pay money",
+        }
+    ]
+    assert result.dropped["scam_risk"] == 1
+    scored_ids = {i for call in scorer_llm.calls for i in call[1].content.split('"')[1::2]}
+    assert "id1" not in scored_ids  # Claude never spent tokens on the scam
+    assert all(m.job.job_id != "id1" for m in result.matches)

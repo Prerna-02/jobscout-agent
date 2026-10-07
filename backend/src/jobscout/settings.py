@@ -67,6 +67,22 @@ class Settings(BaseSettings):
     agent_min_jobs: int = 10
     agent_max_rewrites: int = 3
 
+    # Scoring (Phase 4). Claude scores the shortlist; Gemini is the fallback.
+    anthropic_api_key: SecretStr | None = None
+    scorer_model: str = "claude-sonnet-5"  # chosen after the Sonnet vs Opus comparison
+    scorer_effort: Literal["low", "medium", "high"] = "medium"
+    scorer_timeout_seconds: float = 120.0
+    scorer_batch_size: int = 5
+    shortlist_size: int = 15
+    top_matches: int = 10
+    embedding_model: str = "gemini-embedding-2"
+    job_text_max_chars: int = 4000  # about 1,000 tokens per job ad sent for scoring
+    profile_cache_ttl_seconds: int = 30 * 24 * 60 * 60
+    # Trust check: Haiku reviews only postings the rules are unsure about.
+    trust_model: str = "claude-haiku-4-5"
+    trust_cache_ttl_seconds: int = 30 * 24 * 60 * 60
+    score_cache_ttl_seconds: int = 7 * 24 * 60 * 60
+
     # CV intake limits. Vercel rejects request bodies above 4.5 MB.
     cv_max_bytes: int = 4 * 1024 * 1024
     cv_max_pages: int = 10
