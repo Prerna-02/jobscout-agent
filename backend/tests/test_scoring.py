@@ -333,13 +333,13 @@ def test_jobs_the_model_skips_are_asked_for_once_more():
             ln.split('"')[1] for ln in messages[1].content.splitlines() if ln.startswith("<job id=")
         ]
         seen.append(ids)
-        keep = [i for i in ids if not (i == "j1" and len(seen) == 1)]
+        keep = [i for i in ids if not (i == "J2" and len(seen) == 1)]  # skip the 2nd job once
         return BatchAssessment(jobs=[scores(i, skills=(7, "strong SQL")) for i in keep])
 
     matches = MatchScorer(RunnableLambda(skip_j1_once)).score(
         PROFILE, PREFS, RUBRIC, [(job(i), None) for i in range(3)]
     )
-    assert seen == [["j0", "j1", "j2"], ["j1"]]
+    assert seen == [["J1", "J2", "J3"], ["J1"]]  # the retry batch holds only the skipped job
     assert all(m.total == 70 for m in matches)
 
 

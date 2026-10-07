@@ -99,7 +99,7 @@ Rules:
   on their own they are "caution" at most, never "high_risk".
 - Use "high_risk" only for clear signs of fraud, such as asking for money.
 - If you find nothing concrete, answer "no_concerns" with no concerns.
-- Return one entry per job, using the job_id exactly as given."""
+- Return one entry per job, using the job label exactly as given (J1, J2, ...)."""
 
 
 class TrustChecker:
@@ -165,13 +165,20 @@ class TrustChecker:
 
     def _ask(self, batch: list[JobPosting], config: RunnableConfig | None) -> list[JobReview]:
         llm = self._llm or structured_llm(ReviewBatch, task="screening")
-        jobs_xml = "\n\n".join(f'<job id="{job.job_id}">\n{_ad_text(job)}\n</job>' for job in batch)
+        labels = {f"J{i}": job for i, job in enumerate(batch, 1)}  # short labels, not long ids
+        jobs_xml = "\n\n".join(
+            f'<job id="{label}">\n{_ad_text(job)}\n</job>' for label, job in labels.items()
+        )
         answer = llm.invoke(
             [SystemMessage(_SYSTEM), HumanMessage(f"Review these {len(batch)} ads:\n\n{jobs_xml}")],
             config=config,
         )
         result = answer if isinstance(answer, ReviewBatch) else ReviewBatch(**answer)
-        return result.jobs
+        return [
+            r.model_copy(update={"job_id": labels[r.job_id].job_id})
+            for r in result.jobs
+            if r.job_id in labels
+        ]
 
     def _save(self, job: JobPosting, report: TrustReport) -> None:
         if self._store is not None:

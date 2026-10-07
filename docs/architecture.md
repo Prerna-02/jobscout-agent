@@ -14,6 +14,7 @@ Each package under `backend/src/jobscout/` exposes a small interface from its `_
 | `jobscout.scoring` | `Shortlister.shortlist()`, `MatchScorer.score()`, `rank_matches()` | Embeddings and their cache, the scoring prompt, 5-job batches, Claude prompt caching, quote checks on both the ad and the CV, weighted totals, score caching |
 | `jobscout.trust` | `TrustChecker.check(jobs)` | Scam rules with negation handling, trust signals, Haiku review of uncertain ads only, AI may raise but never lower a level, quote checks, per-job cache |
 | `jobscout.evidence` | `quote_in_text()` | Word-based quote matching shared by scoring and the trust check |
+| `jobscout.api` | `create_app()`, `jobscout-api` | Routes, request/response models, invite codes, per-user and global daily limits, run ownership, Server-Sent Events progress |
 | `jobscout.storage` | `open_store()`, `cache_key()` | Redis or in-memory key-value store shared by every cache |
 | `jobscout.agent` | `JobScoutAgent.start(cv)`, `.resume(run_id, prefs)` | The LangGraph graph, saved runs (Postgres or SQLite), the broadening ladder, thread ids, tracing |
 

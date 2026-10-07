@@ -234,7 +234,7 @@ class TestScoringInTheGraph:
                         scores=[
                             CriterionScore(
                                 criterion="skills",
-                                score=int(i[2:]) % 11,
+                                score=int(i[1:]) % 11,
                                 job_quote="Analyse data with SQL",
                             )
                         ],
@@ -300,6 +300,6 @@ def test_scam_postings_are_removed_before_scoring(cv_bytes):
         }
     ]
     assert result.dropped["scam_risk"] == 1
-    scored_ids = {i for call in scorer_llm.calls for i in call[1].content.split('"')[1::2]}
-    assert "id1" not in scored_ids  # Claude never spent tokens on the scam
+    scored_text = " ".join(call[1].content for call in scorer_llm.calls)
+    assert "registration fee" not in scored_text  # Claude never spent tokens on the scam
     assert all(m.job.job_id != "id1" for m in result.matches)

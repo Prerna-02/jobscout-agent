@@ -32,7 +32,14 @@ from jobscout.jobs import (
 from jobscout.llm import LLMNotConfigured
 from jobscout.observability import flush, trace_config
 from jobscout.profile import CandidateProfile, ProfileBuilder
-from jobscout.scoring import PRESETS, JobMatch, Rubric, agreement, compare_scorers
+from jobscout.scoring import (
+    PRESETS,
+    JobMatch,
+    Rubric,
+    agreement,
+    build_rubric,
+    compare_scorers,
+)
 from jobscout.scoring._scorer import MIN_COVERAGE
 from jobscout.trust import TrustReport
 
@@ -248,24 +255,11 @@ def _format_matches(
 
 def _rubric_from_args(args: argparse.Namespace) -> Rubric | None:
     """--rubric file wins; else --preset with any --weight changes; else None (auto preset)."""
-    if args.rubric:
-        return Rubric.model_validate_json(args.rubric.read_text(encoding="utf-8"))
-    if not args.preset and not args.weight:
-        return None
-    base = PRESETS[args.preset or "professional"]
-    changes = dict(item.split("=", 1) for item in args.weight)
-    unknown = set(changes) - {c.key for c in base.criteria}
-    if unknown:
-        raise ValueError(f"Unknown criteria {sorted(unknown)}; use one of the preset's keys.")
-    criteria = [
-        c.model_copy(update={"weight": int(changes[c.key])}) if c.key in changes else c
-        for c in base.criteria
-    ]
-    if not changes:
-        return base
-    return Rubric(
-        name=f"{base.name} (custom weights)", search_hints=base.search_hints, criteria=criteria
+    custom = (
+        Rubric.model_validate_json(args.rubric.read_text(encoding="utf-8")) if args.rubric else None
     )
+    weights = {key: int(value) for key, value in (item.split("=", 1) for item in args.weight)}
+    return build_rubric(args.preset, weights, custom)
 
 
 def _run_compare(args: argparse.Namespace) -> int:

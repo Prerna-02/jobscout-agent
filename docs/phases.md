@@ -9,8 +9,8 @@ Each phase ends with something you can run, see in Langfuse, and test. Stop at t
 | 2 | Job search tool with Redis cache | Wrapping an external API as a safe, cached tool | Done |
 | 3 | The LangGraph agent | State, nodes, conditional edges, the rewrite loop, interrupt and resume | Done |
 | 4 | Scoring presets and ranking | Embeddings, batched LLM judging, weights you can edit | Done |
-| 5 | FastAPI backend | Two-request runs, streaming progress, per-user limits | Next |
-| 6 | Next.js front end | Upload, review, weight editor, results | |
+| 5 | FastAPI backend | Two-request runs, streaming progress, per-user limits | Done |
+| 6 | Next.js front end | Upload, review, weight editor, results | Next |
 | 7 | Deploy and evaluate | Vercel, Neon, Upstash, Langfuse datasets | |
 
 ---
@@ -81,7 +81,9 @@ uv run jobscout compare <finished-run-id> --models claude-sonnet-5 claude-opus-5
 
 **Done when:** changing weights changes the ranking; scores for criteria a job ad doesn't mention are "not applicable"; no job appears that JSearch didn't return.
 
-## Phase 5: FastAPI backend
+## Phase 5: FastAPI backend (done)
+
+**Try it:** `uv run jobscout-api`, then open http://127.0.0.1:8000/docs and use "Try it out" on `POST /runs` (upload a CV) and `POST /runs/{run_id}/resume`.
 
 **Goal:** `POST /runs` (upload → profile), `POST /runs/{id}/resume` (streamed progress → results), `/rubrics` CRUD, per-user rate limits in Redis.
 

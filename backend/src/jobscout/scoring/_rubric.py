@@ -100,3 +100,33 @@ PRESETS: dict[str, Rubric] = {
 def suggest_preset(profile: CandidateProfile) -> str:
     """Students and graduates without job roles get the Student preset."""
     return "professional" if any(r.kind == "job" for r in profile.roles) else "student"
+
+
+def build_rubric(
+    preset: str | None = None,
+    weights: dict[str, int] | None = None,
+    custom: Rubric | None = None,
+) -> Rubric | None:
+    """Turn a user's choice into a rubric: their own criteria, or a preset with weight changes.
+
+    Returns None when nothing was chosen, meaning "use the preset that fits the profile".
+    """
+    if custom is not None:
+        return custom
+    if not preset and not weights:
+        return None
+    if preset and preset not in PRESETS:
+        raise ValueError(f"Unknown preset '{preset}'. Choose one of: {', '.join(sorted(PRESETS))}.")
+    base = PRESETS[preset or "professional"]
+    if not weights:
+        return base
+    unknown = set(weights) - {c.key for c in base.criteria}
+    if unknown:
+        raise ValueError(f"Unknown criteria {sorted(unknown)} for the {base.name} preset.")
+    criteria = tuple(
+        c.model_copy(update={"weight": int(weights[c.key])}) if c.key in weights else c
+        for c in base.criteria
+    )
+    return Rubric(
+        name=f"{base.name} (custom weights)", search_hints=base.search_hints, criteria=criteria
+    )
