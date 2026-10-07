@@ -10,16 +10,20 @@ order, thinking depth, retries and timeouts stay in here.
 
 - "reasoning": Gemini 3.8 Flash -> 3.7 Flash -> Flash-Lite -> OpenRouter
 - "light":     Flash-Lite (low thinking) -> 3.8 Flash (low thinking) -> OpenRouter
+- "scoring":   Claude (SCORER_MODEL, prompt-cached system prompt) -> the "reasoning" chain
+- "screening": Claude Haiku (TRUST_MODEL) -> the "light" chain
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Literal, TypeVar
+from typing import Any, Literal, TypeVar
 
 from google.genai.errors import ServerError
+from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import LanguageModelInput
-from langchain_core.runnables import Runnable
+from langchain_core.messages import BaseMessage, SystemMessage
+from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, SecretStr
@@ -29,7 +33,7 @@ from jobscout.settings import Settings, get_settings
 __all__ = ["LLMNotConfigured", "Task", "structured_llm"]
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
-Task = Literal["reasoning", "light"]
+Task = Literal["reasoning", "light", "scoring", "screening"]
 
 
 class LLMNotConfigured(RuntimeError):
@@ -48,17 +52,45 @@ logging.getLogger("google_genai.models").addFilter(_HideAFCNotice())
 
 
 def structured_llm(
-    schema: type[SchemaT], *, task: Task = "reasoning", settings: Settings | None = None
+    schema: type[SchemaT],
+    *,
+    task: Task = "reasoning",
+    model: str | None = None,
+    fallbacks: bool = True,
+    settings: Settings | None = None,
 ) -> Runnable[LanguageModelInput, SchemaT]:
     """A runnable that returns `schema` instances, trying each configured model in turn.
 
     Each Gemini model is retried on server errors (503 "high demand"); any other
     error, a rate limit, a timeout or a schema-invalid reply moves to the next model.
+    For "scoring", `model` picks the Claude model and `fallbacks=False` uses only it
+    (for side-by-side model comparisons).
     """
     s = settings or get_settings()
-    light = task == "light"
+    light = task in ("light", "screening")
     timeout = s.llm_light_timeout_seconds if light else s.llm_timeout_seconds
     candidates: list[Runnable[LanguageModelInput, SchemaT]] = []
+
+    if task in ("scoring", "screening") and _is_set(s.anthropic_api_key):
+        scoring = task == "scoring"
+        claude_model = model or (s.scorer_model if scoring else s.trust_model)
+        options: dict[str, Any] = {}
+        if scoring:  # Haiku rejects the effort setting, so only the scorer sets it
+            options["effort"] = s.scorer_effort  # judgement, not the deepest reasoning
+        claude = ChatAnthropic(
+            model=claude_model,
+            api_key=s.anthropic_api_key,
+            max_tokens=16_000 if scoring else 4_000,
+            timeout=s.scorer_timeout_seconds,
+            max_retries=2,
+            **options,
+        )
+        structured = claude.with_structured_output(schema, method="json_schema")
+        # The scorer's system prompt is long and repeated across batches: worth caching.
+        prepared = (RunnableLambda(_cache_system_prompt) | structured) if scoring else structured
+        candidates.append(prepared.with_config(run_name=f"claude/{claude_model}"))
+        if not fallbacks:
+            return candidates[0]
 
     if _is_set(s.google_api_key):
         if light:  # writing a search phrase doesn't need the strongest model or deep thinking
@@ -106,6 +138,27 @@ def structured_llm(
 
     primary, *fallbacks = candidates
     return primary.with_fallbacks(fallbacks) if fallbacks else primary
+
+
+def _cache_system_prompt(messages: list[BaseMessage]) -> list[BaseMessage]:
+    """Mark the system prompt as cacheable for Claude.
+
+    The scorer's system prompt (rules, rubric, profile) is identical across its
+    batches; only the jobs change. With this marker, batches 2+ read it from
+    Claude's prompt cache at a tenth of the input price. Gemini fallbacks get the
+    plain messages, because the marker is Claude-specific.
+    """
+    marked: list[BaseMessage] = []
+    for message in messages:
+        if isinstance(message, SystemMessage) and isinstance(message.content, str):
+            block = {
+                "type": "text",
+                "text": message.content,
+                "cache_control": {"type": "ephemeral"},
+            }
+            message = SystemMessage(content=[block])
+        marked.append(message)
+    return marked
 
 
 def _is_set(secret: SecretStr | None) -> bool:

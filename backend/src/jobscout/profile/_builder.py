@@ -10,6 +10,7 @@ from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
 
 from jobscout.cv import CVDocument
 from jobscout.llm import structured_llm
+from jobscout.storage import KeyValueStore, cache_key
 
 from ._experience import derive_seniority, parse_cv_date, total_years
 from ._extraction import PROMPT_VERSION, ProfileExtraction, build_messages
@@ -34,9 +35,13 @@ class ProfileBuilder:
         extractor: Runnable[Any, ProfileExtraction] | None = None,
         *,
         today: date | None = None,
+        store: KeyValueStore | None = None,
+        cache_ttl_seconds: int = 30 * 24 * 60 * 60,
     ) -> None:
         self._extractor = extractor
         self._today = today
+        self._store = store
+        self._ttl = cache_ttl_seconds
         # Wrapping the whole build in one runnable gives Langfuse a parent span
         # ("build_profile") with the LLM call nested inside and the final,
         # fact-checked profile as its output.
@@ -50,11 +55,20 @@ class ProfileBuilder:
         return self._runnable.invoke(cv, config=config)  # type: ignore[arg-type]
 
     def _build(self, cv: CVDocument, config: RunnableConfig) -> CandidateProfile:
-        extractor = self._extractor or structured_llm(ProfileExtraction)
-        raw = extractor.invoke(build_messages(cv.text), config=config)
-        extraction = (
-            raw if isinstance(raw, ProfileExtraction) else ProfileExtraction.model_validate(raw)
-        )
+        # The same CV text and prompt version always give the same extraction, so it is
+        # cached: re-running a CV costs no LLM call. Dates are still computed fresh below.
+        key = cache_key("profile", PROMPT_VERSION, cv.text)
+        cached = self._store.get_json(key) if self._store else None
+        if cached is not None:
+            extraction = ProfileExtraction.model_validate(cached)
+        else:
+            extractor = self._extractor or structured_llm(ProfileExtraction)
+            raw = extractor.invoke(build_messages(cv.text), config=config)
+            extraction = (
+                raw if isinstance(raw, ProfileExtraction) else ProfileExtraction.model_validate(raw)
+            )
+            if self._store is not None:
+                self._store.set_json(key, extraction.model_dump(mode="json"), ttl_seconds=self._ttl)
         return assemble_profile(extraction, cv.text, today=self._today or date.today())
 
 

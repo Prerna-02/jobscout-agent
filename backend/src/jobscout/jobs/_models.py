@@ -93,6 +93,8 @@ class JobPosting(BaseModel):
     posted_text: str | None = None
     description: str = ""
     apply_link: str
+    apply_is_direct: bool = False  # True when the link goes to the employer's own site
+    employer_website: str | None = None
     publisher: str | None = None
     salary: str | None = None
 

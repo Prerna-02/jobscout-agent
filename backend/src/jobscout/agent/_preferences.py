@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from jobscout.jobs import DatePosted, EmploymentType
 from jobscout.profile import CandidateProfile
+from jobscout.scoring import PRESETS, Rubric, suggest_preset
 
 _SAFE_TEXT = re.compile(r"[\w .,&+#/()'-]+")
 
@@ -24,6 +25,9 @@ class SearchPreferences(BaseModel):
     date_posted: DatePosted = "week"
     employment_types: tuple[EmploymentType, ...] = ()
     skills: list[str] = Field(default_factory=list, max_length=80)  # same cap as the profile
+    rubric: Rubric | None = Field(
+        default=None, description="Scoring weights; None means the suggested preset."
+    )
 
     @field_validator("target_titles", "skills")
     @classmethod
@@ -63,4 +67,10 @@ def suggest_preferences(profile: CandidateProfile) -> dict[str, object]:
         "remote_only": profile.work_mode == "remote",
         "date_posted": "week",
         "skills": profile.confirmed_skills,
+        "preset": suggest_preset(profile),
     }
+
+
+def resolve_rubric(prefs: SearchPreferences, profile: CandidateProfile) -> Rubric:
+    """The user's weights if they set any, otherwise the preset that fits the profile."""
+    return prefs.rubric or PRESETS[suggest_preset(profile)]

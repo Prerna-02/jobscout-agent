@@ -37,6 +37,8 @@ def normalize_job(raw: dict[str, Any], *, now: datetime) -> JobPosting | None:
         posted_text=_text(raw.get("job_posted_at")),
         description=(_text(raw.get("job_description")) or "")[:_MAX_DESCRIPTION_CHARS],
         apply_link=str(link),
+        apply_is_direct=bool(raw.get("job_apply_is_direct")),
+        employer_website=_text(raw.get("employer_website")),
         publisher=_text(raw.get("job_publisher")),
         salary=_salary(raw),
     )

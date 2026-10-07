@@ -18,7 +18,7 @@ from jobscout.jobs import (
 )
 from jobscout.jobs._client import JSearchClient
 from jobscout.jobs._normalize import normalize_job, parse_relative_age
-from jobscout.jobs._store import MemoryStore, RedisStore
+from jobscout.storage import MemoryStore, RedisStore
 
 NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
 FIXTURE = json.loads(

@@ -8,8 +8,8 @@ Each phase ends with something you can run, see in Langfuse, and test. Stop at t
 | 1 | CV intake and fact-checked profile | Structured output, prompt-injection defence, keeping maths out of the LLM | Done |
 | 2 | Job search tool with Redis cache | Wrapping an external API as a safe, cached tool | Done |
 | 3 | The LangGraph agent | State, nodes, conditional edges, the rewrite loop, interrupt and resume | Done |
-| 4 | Scoring presets and ranking | Embeddings, batched LLM judging, weights you can edit | Next |
-| 5 | FastAPI backend | Two-request runs, streaming progress, per-user limits | |
+| 4 | Scoring presets and ranking | Embeddings, batched LLM judging, weights you can edit | Done |
+| 5 | FastAPI backend | Two-request runs, streaming progress, per-user limits | Next |
 | 6 | Next.js front end | Upload, review, weight editor, results | |
 | 7 | Deploy and evaluate | Vercel, Neon, Upstash, Langfuse datasets | |
 
@@ -68,7 +68,14 @@ Paused runs are saved to Postgres when `DATABASE_URL` is set, otherwise to `back
 
 **Done when:** a rare job title triggers rewrites (visible in Langfuse), the loop stops after 3 attempts, and a paused run resumes from Postgres in a new process.
 
-## Phase 4: Scoring presets and ranking
+## Phase 4: Scoring presets and ranking (done)
+
+**Try it:**
+```bash
+uv run jobscout resume <run-id> --title "Data Scientist" --country ae --city Dubai --preset student
+uv run jobscout resume <run-id> ... --preset professional --weight skills=60 --weight domain=0
+uv run jobscout compare <finished-run-id> --models claude-sonnet-5 claude-opus-5
+```
 
 **Goal:** editable presets (Professional, Student, custom criteria), Gemini-embedding shortlist, batched scoring (5 jobs per call) with quoted evidence, weighted totals in code, top 10.
 
