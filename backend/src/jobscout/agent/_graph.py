@@ -33,6 +33,7 @@ class AgentState(TypedDict, total=False):
     cv_text: str
     cv_fingerprint: str
     cv_format: str
+    owner_hash: str  # hash of the run's secret key; the key itself is never stored
     profile: dict[str, Any]  # CandidateProfile
     preferences: dict[str, Any]  # SearchPreferences, set at the review step
     query: dict[str, Any]  # the SearchQuery to run next

@@ -29,6 +29,8 @@ class KeyValueStore(Protocol):
     def get_json(self, key: str) -> Any | None: ...
     def set_json(self, key: str, value: Any, *, ttl_seconds: int) -> None: ...
     def incr(self, key: str, *, ttl_seconds: int) -> int | None: ...
+    def claim(self, key: str, value: str, *, ttl_seconds: int) -> bool | None: ...
+    def release(self, key: str, value: str) -> None: ...
 
 
 class RedisStore:
@@ -79,6 +81,22 @@ class RedisStore:
             logger.warning("Redis counter failed, quota not tracked for this call: %s", exc)
             return None
 
+    def claim(self, key: str, value: str, *, ttl_seconds: int) -> bool | None:
+        """Take `key` only if nobody holds it. None means Redis couldn't be reached."""
+        try:
+            return bool(self._redis.set(key, value, ex=ttl_seconds, nx=True))
+        except redis.RedisError as exc:
+            logger.warning("Redis claim failed: %s", exc)
+            return None
+
+    def release(self, key: str, value: str) -> None:
+        """Free `key` if we still hold it (an expired claim may belong to someone else now)."""
+        try:
+            if self._redis.get(key) == value:
+                self._redis.delete(key)
+        except redis.RedisError as exc:
+            logger.warning("Redis release failed, the claim will expire on its own: %s", exc)
+
 
 class MemoryStore:
     """Same behaviour as RedisStore, kept in this process only."""
@@ -101,6 +119,16 @@ class MemoryStore:
         expires = self._data[key][0]
         self._data[key] = (expires, current + 1)
         return current + 1
+
+    def claim(self, key: str, value: str, *, ttl_seconds: int) -> bool | None:
+        if self.get_json(key) is not None:
+            return False
+        self.set_json(key, value, ttl_seconds=ttl_seconds)
+        return True
+
+    def release(self, key: str, value: str) -> None:
+        if self.get_json(key) == value:
+            self._data.pop(key, None)
 
 
 def open_store(settings: Any = None) -> KeyValueStore:

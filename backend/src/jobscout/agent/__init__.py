@@ -66,6 +66,7 @@ class PausedRun:
     run_id: str
     profile: CandidateProfile
     suggested: dict[str, Any]
+    owner_hash: str | None = None
 
 
 @dataclass
@@ -80,6 +81,7 @@ class FinishedRun:
     matches: list[JobMatch] = field(default_factory=list)  # ranked, best first
     trust: dict[str, TrustReport] = field(default_factory=dict)  # by job_id
     removed_as_risky: list[dict[str, str]] = field(default_factory=list)
+    owner_hash: str | None = None
     rubric_name: str | None = None
 
 
@@ -96,8 +98,13 @@ class JobScoutAgent:
         with _checkpointer(s) as saver:
             yield cls(saver, lambda: _default_deps(s))
 
-    def start(self, cv_bytes: bytes, *, user_id: str | None = None) -> PausedRun:
-        """Read the CV and build the profile, then pause for review. Raises CVRejected."""
+    def start(
+        self, cv_bytes: bytes, *, user_id: str | None = None, owner_hash: str | None = None
+    ) -> PausedRun:
+        """Read the CV and build the profile, then pause for review. Raises CVRejected.
+
+        `owner_hash` is saved with the run, so access survives as long as the run does.
+        """
         cv = read_cv(cv_bytes)  # the raw file never enters the saved state
         run_id = uuid.uuid4().hex[:12]
         graph = build_graph(self._deps(), self._checkpointer)
@@ -108,6 +115,7 @@ class JobScoutAgent:
                     "cv_text": cv.text,
                     "cv_fingerprint": cv.fingerprint,
                     "cv_format": cv.source_format,
+                    "owner_hash": owner_hash or "",
                 },
                 config=config,
             )
@@ -119,6 +127,7 @@ class JobScoutAgent:
             run_id=run_id,
             profile=CandidateProfile.model_validate(paused["profile"]),
             suggested=paused["suggested"],
+            owner_hash=owner_hash,
         )
 
     def saved_profile(self, run_id: str) -> CandidateProfile:
@@ -194,6 +203,7 @@ class JobScoutAgent:
                 run_id=run_id,
                 profile=CandidateProfile.model_validate(paused["profile"]),
                 suggested=paused["suggested"],
+                owner_hash=snapshot.values.get("owner_hash") or None,
             )
         if snapshot.values.get("outcome"):
             return _finished(run_id, snapshot.values, {})
@@ -249,6 +259,7 @@ def _finished(run_id: str, state: dict[str, Any], tokens: dict[str, dict[str, in
         rubric_name=state.get("rubric_name"),
         trust={k: TrustReport.model_validate(v) for k, v in state.get("trust", {}).items()},
         removed_as_risky=state.get("removed_as_risky", []),
+        owner_hash=state.get("owner_hash") or None,
     )
 
 
