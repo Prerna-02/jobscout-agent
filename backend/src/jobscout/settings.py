@@ -89,6 +89,12 @@ class Settings(BaseSettings):
     api_resumes_per_day: int = 10  # searches per user per day (these spend JSearch and Claude)
     api_global_resumes_per_day: int = 100  # all users together: protects the API keys
     cors_origins: str = "http://localhost:3000"  # comma-separated website origins
+    # One network (office, campus Wi-Fi) is shared by several people: it gets this many
+    # times the per-person limit, which still stops one person from resetting their id.
+    api_ip_limit_multiplier: int = 3
+    # Searches running at the same moment, across all users. Each one makes ~10 calls to
+    # Gemini, JSearch and Claude; more at once would hit the free-tier rate limits.
+    api_max_concurrent_searches: int = 5
 
     # CV intake limits. Vercel rejects request bodies above 4.5 MB.
     cv_max_bytes: int = 4 * 1024 * 1024

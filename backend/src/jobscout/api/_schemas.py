@@ -16,6 +16,11 @@ from jobscout.trust import TrustReport
 class StartResponse(BaseModel):
     run_id: str
     status: Literal["paused"] = "paused"
+    run_token: str | None = Field(
+        default=None,
+        description="Secret key for this run, returned once at upload. Send it as the "
+        "X-Run-Token header on every later call about this run.",
+    )
     profile: CandidateProfile
     suggested: dict[str, Any] = Field(description="Starting values for the review screen.")
     presets: dict[str, Rubric] = Field(description="Scorecards the user can choose from.")
@@ -70,9 +75,10 @@ class ResultResponse(BaseModel):
     llm_tokens: dict[str, dict[str, int]]
 
 
-def start_response(paused: PausedRun) -> StartResponse:
+def start_response(paused: PausedRun, run_token: str | None = None) -> StartResponse:
     return StartResponse(
         run_id=paused.run_id,
+        run_token=run_token,
         profile=paused.profile,
         suggested=paused.suggested,
         presets=PRESETS,

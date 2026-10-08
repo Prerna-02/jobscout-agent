@@ -22,7 +22,7 @@ from jobscout.scoring import PRESETS, Rubric
 from jobscout.settings import Settings, get_settings
 from jobscout.storage import KeyValueStore, open_store
 
-from ._guard import Guard
+from ._guard import Guard, new_run_key
 from ._schemas import ResultResponse, ResumeRequest, StartResponse, result_response, start_response
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,7 @@ _DESCRIPTION = """
 Upload a CV, review the profile, then let the agent search, check and score real jobs.
 
 1. `POST /runs` with the CV file. You get the profile and a `run_id`; the run is paused.
+   Keep the returned `run_token`: send it as `X-Run-Token` on every call about this run.
 2. `POST /runs/{run_id}/resume` with your choices. Progress streams live as Server-Sent
    Events (`progress`, then `result`). Add `?stream=false` to get one JSON answer instead.
 3. `GET /runs/{run_id}` shows a run again, paused or finished.
@@ -54,7 +55,7 @@ def create_app(
         CORSMiddleware,
         allow_origins=[o.strip() for o in s.cors_origins.split(",") if o.strip()],
         allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type", "X-Invite-Code"],
+        allow_headers=["Content-Type", "X-Invite-Code", "X-Client-Id", "X-Run-Token"],
     )
 
     @app.get("/health", tags=["meta"])
@@ -67,34 +68,32 @@ def create_app(
 
     @app.post("/runs", status_code=201, tags=["runs"])
     def start_run(request: Request, cv: Annotated[UploadFile, File()]) -> StartResponse:
-        identity = guard.identity(request)
+        guard.check_invite(request)
         data = cv.file.read(s.cv_max_bytes + 1)  # never read more than the limit allows
         if len(data) > s.cv_max_bytes:
             raise HTTPException(413, f"The file is larger than {s.cv_max_bytes // 1_048_576} MB.")
-        guard.spend(identity, "start")
+        guard.spend(request, "start")
+        run_key, owner_hash = new_run_key()
         try:
             with opener() as agent:
-                paused = agent.start(data, user_id=identity)
+                paused = agent.start(data, user_id=guard.user_id(request), owner_hash=owner_hash)
         except CVRejected as exc:
             raise HTTPException(422, {"reason": exc.reason, "message": exc.message}) from exc
         except LLMNotConfigured as exc:
             raise HTTPException(503, str(exc)) from exc
-        guard.claim(paused.run_id, identity)
-        return start_response(paused)
+        # The key is shown exactly once, here. Only its hash is stored, with the run.
+        return start_response(paused, run_key)
 
     @app.get("/runs/{run_id}", tags=["runs"])
     def get_run(run_id: str, request: Request) -> StartResponse | ResultResponse:
-        guard.require_owner(run_id, guard.identity(request))
-        with opener() as agent:
-            run = _status(agent, run_id)
+        guard.check_invite(request)
+        run = _owned_run(opener, guard, request, run_id)
         return start_response(run) if isinstance(run, PausedRun) else result_response(run)
 
     @app.post("/runs/{run_id}/resume", tags=["runs"])
     def resume_run(run_id: str, body: ResumeRequest, request: Request, stream: bool = True) -> Any:
-        identity = guard.identity(request)
-        guard.require_owner(run_id, identity)
-        with opener() as agent:
-            run = _status(agent, run_id)
+        guard.check_invite(request)
+        run = _owned_run(opener, guard, request, run_id)
         if isinstance(run, FinishedRun):
             raise HTTPException(409, "This run has finished. Upload the CV again to search again.")
         try:
@@ -103,19 +102,31 @@ def create_app(
             raise HTTPException(422, exc.errors()[0]["msg"]) from exc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
-        guard.spend(identity, "resume")
+
+        # Take a search slot first (503 if JobScout is busy), so a busy moment doesn't
+        # use up the person's daily searches. Then count the search.
+        slot = guard.search_slot()
+        slot.__enter__()
+        try:
+            guard.spend(request, "resume")
+        except HTTPException:
+            slot.__exit__(None, None, None)
+            raise
+        user = guard.user_id(request)
 
         if not stream:
             try:
                 with opener() as agent:
-                    return result_response(agent.resume(run_id, prefs, user_id=identity))
+                    return result_response(agent.resume(run_id, prefs, user_id=user))
             except (JSearchNotConfigured, LLMNotConfigured) as exc:
                 raise HTTPException(503, str(exc)) from exc
+            finally:
+                slot.__exit__(None, None, None)
 
         def events() -> Iterator[str]:
             try:
                 with opener() as agent:
-                    for event in agent.resume_events(run_id, prefs, user_id=identity):
+                    for event in agent.resume_events(run_id, prefs, user_id=user):
                         if isinstance(event, Progress):
                             yield _sse("progress", {"step": event.step, "message": event.message})
                         else:
@@ -127,6 +138,8 @@ def create_app(
             except Exception:  # never leak internals into the stream
                 logger.exception("Run %s failed", run_id)
                 yield _sse("error", {"message": "Something went wrong. Please try again."})
+            finally:
+                slot.__exit__(None, None, None)  # free the slot as soon as the search ends
 
         return StreamingResponse(
             events(),
@@ -137,11 +150,17 @@ def create_app(
     return app
 
 
-def _status(agent: JobScoutAgent, run_id: str) -> PausedRun | FinishedRun:
+def _owned_run(
+    opener: AgentOpener, guard: Guard, request: Request, run_id: str
+) -> PausedRun | FinishedRun:
+    """The run, if it exists and the request carries its key; otherwise 404 either way."""
     try:
-        return agent.status(run_id)
+        with opener() as agent:
+            run = agent.status(run_id)
     except RunNotFound as exc:
         raise HTTPException(404, str(exc)) from exc
+    guard.require_run_key(request, run.owner_hash, run_id)
+    return run
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
