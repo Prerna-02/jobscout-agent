@@ -3,12 +3,14 @@ from datetime import date
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableLambda
+from pydantic import ValidationError
 
-from jobscout.cv import CVDocument, read_cv
+from jobscout.cv import CVDocument, CVRejected, read_cv
 from jobscout.profile import ProfileBuilder, ProfileExtraction, Role
 from jobscout.profile._experience import derive_seniority, parse_cv_date, total_years
-from jobscout.profile._extraction import ExtractedRole
+from jobscout.profile._extraction import PROMPT_VERSION, ExtractedRole
 from jobscout.profile._factcheck import SkillMatcher
+from jobscout.storage import MemoryStore, cache_key
 
 from .conftest import SAMPLE_CV, make_docx
 
@@ -165,6 +167,32 @@ class TestProfileBuilder:
         profile, _ = self.build(cv, extraction)
         assert profile.years_experience is None
         assert any("Dates could not be read" in w for w in profile.warnings)
+
+    def test_empty_extraction_is_invalid(self):
+        with pytest.raises(ValidationError, match="empty"):
+            ProfileExtraction(summary="A candidate.")
+
+    def test_empty_reply_from_every_model_is_a_clear_rejection(self, cv):
+        def blank(_messages):
+            return {"summary": ""}  # what a model returned for a readable CV
+
+        store = MemoryStore()
+        with pytest.raises(CVRejected) as exc:
+            ProfileBuilder(RunnableLambda(blank), today=TODAY, store=store).build(cv)
+        assert exc.value.reason == "no_profile"
+        assert store.get_json(cache_key("profile", PROMPT_VERSION, cv.text)) is None
+
+    def test_an_empty_cached_profile_is_ignored(self, cv):
+        store = MemoryStore()
+        store.set_json(
+            cache_key("profile", PROMPT_VERSION, cv.text), {"skills": []}, ttl_seconds=60
+        )
+        fake = FakeExtractor(_extraction())
+        profile = ProfileBuilder(fake.runnable, today=TODAY, store=store).build(cv)
+        assert fake.messages  # the model was asked again
+        assert profile.confirmed_skills == ["SQL", "Power BI", "Python"]
+        cached = store.get_json(cache_key("profile", PROMPT_VERSION, cv.text))
+        assert cached["skills"]  # and the good answer replaced the empty one
 
     def test_cv_is_sent_as_delimited_data(self):
         cv = CVDocument(

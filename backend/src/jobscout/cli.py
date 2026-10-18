@@ -10,6 +10,7 @@ uv run jobscout resume <run-id> --title "Data Analyst" --country ae --city Dubai
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -89,8 +90,12 @@ def main(argv: list[str] | None = None) -> int:
         "--models", nargs="+", default=["claude-sonnet-5", "claude-opus-5"], metavar="MODEL"
     )
 
+    commands.add_parser("openapi", help="Print the API schema (used to generate website types)")
+
     args = parser.parse_args(argv)
     _utf8_stdout()
+    if args.command == "openapi":
+        return _print_openapi()
     if args.command == "search":
         return _run_search(args)
     if args.command == "start":
@@ -122,6 +127,17 @@ def main(argv: list[str] | None = None) -> int:
         flush()
 
     print(profile.model_dump_json(indent=2) if args.json else _format_profile(profile))
+    return 0
+
+
+def _print_openapi() -> int:
+    from jobscout.api import create_app
+    from jobscout.settings import Settings
+    from jobscout.storage import MemoryStore
+
+    # Built without real settings or Redis: only the routes' shapes matter here.
+    app = create_app(Settings(_env_file=None), store=MemoryStore())
+    print(json.dumps(app.openapi(), indent=2))
     return 0
 
 

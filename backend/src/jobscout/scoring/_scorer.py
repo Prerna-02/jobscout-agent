@@ -318,7 +318,8 @@ def _candidate(profile: CandidateProfile, prefs: dict[str, Any]) -> str:
         "Target roles": ", ".join(prefs.get("target_titles") or profile.target_titles),
         "Seniority": profile.seniority,
         "Years of experience": profile.years_experience,
-        "Skills": ", ".join(prefs.get("skills") or profile.confirmed_skills),
+        # The user's edited list wins, even when they removed everything.
+        "Skills": ", ".join(prefs.get("skills", profile.confirmed_skills)),
         "Roles": "; ".join(roles),
         "Education": "; ".join(profile.education),
         "Certifications": "; ".join(profile.certifications),

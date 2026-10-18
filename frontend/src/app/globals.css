@@ -1,0 +1,118 @@
+@import "tailwindcss";
+
+/* JobScout: a calm working tool. Cool paper ground, ink text, one deep-teal accent,
+   and score colours (good / fair / weak) kept separate from the accent. */
+:root {
+  --bg: #f3f5f7;
+  --surface: #ffffff;
+  --sunken: #eaeef2;
+  --ink: #14202e;
+  --muted: #5b6676;
+  --line: #d9dfe6;
+  --accent: #0d6b66;
+  --accent-ink: #ffffff;
+  --accent-soft: #dcefed;
+  --accent-2: #1b7fa6;
+  --glow: rgba(13, 107, 102, 0.12);
+  --good: #1d7a4b;
+  --fair: #9a6410;
+  --weak: #b23a30;
+  --good-soft: #e1f3e8;
+  --fair-soft: #fbf0db;
+  --weak-soft: #fbe6e3;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #0d131b;
+    --surface: #151d28;
+    --sunken: #1b2532;
+    --ink: #e3e8ef;
+    --muted: #97a2b3;
+    --line: #283444;
+    --accent: #4cc0b6;
+    --accent-ink: #062523;
+    --accent-soft: #123432;
+    --accent-2: #5bbfe3;
+    --glow: rgba(76, 192, 182, 0.14);
+    --good: #5ccf8f;
+    --fair: #e5b04f;
+    --weak: #f08377;
+    --good-soft: #123222;
+    --fair-soft: #33270f;
+    --weak-soft: #3a1a17;
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-2: var(--accent-2);
+  --color-good: var(--good);
+  --color-fair: var(--fair);
+  --color-weak: var(--weak);
+  --color-good-soft: var(--good-soft);
+  --color-fair-soft: var(--fair-soft);
+  --color-weak-soft: var(--weak-soft);
+  --font-display: var(--font-bricolage);
+  --font-sans: var(--font-plex-sans);
+  --font-mono: var(--font-plex-mono);
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* A soft wash of the accent behind the top of a page; decorative only. */
+.page-glow {
+  background-image: radial-gradient(60rem 28rem at 15% -10%, var(--glow), transparent 70%),
+    radial-gradient(40rem 22rem at 95% 0%, var(--glow), transparent 70%);
+}
+
+.text-gradient {
+  background-image: linear-gradient(100deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@keyframes rise {
+  from { opacity: 0.001; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.animate-rise { animation: rise 0.4s ease-out both; }
+
+/* The example card's cursor "click": a ripple once the cursor has arrived. */
+@keyframes click {
+  0% { opacity: 0; transform: scale(0.3); }
+  1% { opacity: 0.8; }
+  100% { opacity: 0; transform: scale(2.2); }
+}
+.animate-click { animation: click 0.7s ease-out 0.7s both; }

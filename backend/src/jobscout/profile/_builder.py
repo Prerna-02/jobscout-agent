@@ -7,9 +7,10 @@ from datetime import date
 from typing import Any
 
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
+from pydantic import ValidationError
 
-from jobscout.cv import CVDocument
-from jobscout.llm import structured_llm
+from jobscout.cv import CVDocument, CVRejected
+from jobscout.llm import LLMNotConfigured, structured_llm
 from jobscout.storage import KeyValueStore, cache_key
 
 from ._experience import derive_seniority, parse_cv_date, total_years
@@ -58,18 +59,37 @@ class ProfileBuilder:
         # The same CV text and prompt version always give the same extraction, so it is
         # cached: re-running a CV costs no LLM call. Dates are still computed fresh below.
         key = cache_key("profile", PROMPT_VERSION, cv.text)
-        cached = self._store.get_json(key) if self._store else None
-        if cached is not None:
-            extraction = ProfileExtraction.model_validate(cached)
-        else:
-            extractor = self._extractor or structured_llm(ProfileExtraction)
-            raw = extractor.invoke(build_messages(cv.text), config=config)
-            extraction = (
-                raw if isinstance(raw, ProfileExtraction) else ProfileExtraction.model_validate(raw)
-            )
+        extraction = self._cached(key)
+        if extraction is None:
+            extraction = self._extract(cv, config)
             if self._store is not None:
                 self._store.set_json(key, extraction.model_dump(mode="json"), ttl_seconds=self._ttl)
         return assemble_profile(extraction, cv.text, today=self._today or date.today())
+
+    def _cached(self, key: str) -> ProfileExtraction | None:
+        cached = self._store.get_json(key) if self._store else None
+        if cached is None:
+            return None
+        try:
+            return ProfileExtraction.model_validate(cached)
+        except ValidationError:  # e.g. an empty extraction saved before it was rejected
+            return None
+
+    def _extract(self, cv: CVDocument, config: RunnableConfig) -> ProfileExtraction:
+        extractor = self._extractor or structured_llm(ProfileExtraction)
+        try:
+            raw = extractor.invoke(build_messages(cv.text), config=config)
+            if isinstance(raw, ProfileExtraction):
+                return raw
+            return ProfileExtraction.model_validate(raw)
+        except LLMNotConfigured:
+            raise
+        except Exception as exc:  # every model failed or replied with an empty profile
+            raise CVRejected(
+                "no_profile",
+                "We couldn't read a profile from this CV just now. Please try again in a "
+                "minute, or upload it as a PDF.",
+            ) from exc
 
 
 def assemble_profile(
