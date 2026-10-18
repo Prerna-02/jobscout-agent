@@ -287,6 +287,13 @@ class TestFilter:
         assert [j.job_id for j in result.kept] == ["remote", "undated"]
         assert result.dropped == {"wrong_country": 1, "too_old": 1, "duplicate": 1}
 
+    def test_blank_country_is_kept(self):
+        # JSearch was asked for the country already; it often leaves the field blank.
+        jobs = [job("blank", "A", location="Sharjah"), job("other", "B", country="IN")]
+        result = filter_jobs(jobs, FilterRules(countries=frozenset({"ae"})), now=NOW)
+        assert [j.job_id for j in result.kept] == ["blank"]
+        assert result.dropped == {"wrong_country": 1}
+
     def test_remote_only(self):
         result = filter_jobs(
             [job("1", is_remote=True), job("2", "B")], FilterRules(remote_only=True), now=NOW

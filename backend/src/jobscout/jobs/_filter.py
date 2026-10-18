@@ -26,7 +26,7 @@ class FilterResult:
 
 
 def filter_jobs(jobs: Iterable[JobPosting], rules: FilterRules, *, now: datetime) -> FilterResult:
-    """Keep order, drop the rest. Unknown posting dates are kept, not guessed."""
+    """Keep order, drop the rest. Unknown posting dates and countries are kept, not guessed."""
     kept: list[JobPosting] = []
     dropped: Counter[str] = Counter()
     seen_ids: set[str] = set(rules.exclude_ids)
@@ -41,7 +41,7 @@ def filter_jobs(jobs: Iterable[JobPosting], rules: FilterRules, *, now: datetime
             reason = "duplicate"
         elif rules.remote_only and not job.is_remote:
             reason = "not_remote"
-        elif countries and not job.is_remote and (job.country or "").upper() not in countries:
+        elif countries and not job.is_remote and _other_country(job, countries):
             reason = "wrong_country"
         elif oldest and job.posted_at and job.posted_at < oldest:
             reason = "too_old"
@@ -53,6 +53,12 @@ def filter_jobs(jobs: Iterable[JobPosting], rules: FilterRules, *, now: datetime
         dropped[reason] += 1
 
     return FilterResult(kept=kept, dropped=dict(dropped))
+
+
+def _other_country(job: JobPosting, countries: set[str]) -> bool:
+    # A blank country is kept: JSearch was already asked for this country, and it
+    # often leaves the field empty on ads that only name a city.
+    return bool(job.country) and job.country.upper() not in countries
 
 
 def _fold(text: str) -> str:

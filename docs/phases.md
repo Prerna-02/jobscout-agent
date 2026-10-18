@@ -10,8 +10,8 @@ Each phase ends with something you can run, see in Langfuse, and test. Stop at t
 | 3 | The LangGraph agent | State, nodes, conditional edges, the rewrite loop, interrupt and resume | Done |
 | 4 | Scoring presets and ranking | Embeddings, batched LLM judging, weights you can edit | Done |
 | 5 | FastAPI backend | Two-request runs, streaming progress, per-user limits | Done |
-| 6 | Next.js front end | Upload, review, weight editor, results | Next |
-| 7 | Deploy and evaluate | Vercel, Neon, Upstash, Langfuse datasets | |
+| 6 | Next.js front end | Upload, review, weight editor, results | Done |
+| 7 | Deploy and evaluate | Vercel, Neon, Upstash, Langfuse datasets | Next |
 
 ---
 
@@ -87,7 +87,9 @@ uv run jobscout compare <finished-run-id> --models claude-sonnet-5 claude-opus-5
 
 **Goal:** `POST /runs` (upload → profile), `POST /runs/{id}/resume` (streamed progress → results), `/rubrics` CRUD, per-user rate limits in Redis.
 
-## Phase 6: Next.js front end
+## Phase 6: Next.js front end (done)
+
+**Try it:** start the API (`cd backend && uv run jobscout-api`) and the website (`cd frontend && npm run dev`), then open http://localhost:3000.
 
 **Goal:** upload page, profile review with flagged-skill chips, weight sliders and custom criteria, live progress, result cards with ratings sent to Langfuse.
 

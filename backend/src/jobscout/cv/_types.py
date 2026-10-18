@@ -12,6 +12,7 @@ RejectReason = Literal[
     "too_long",
     "no_text",
     "unreadable",
+    "no_profile",
 ]
 
 

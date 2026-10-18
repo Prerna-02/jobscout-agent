@@ -11,7 +11,7 @@ import re
 from typing import Literal
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 PROMPT_VERSION = "profile-extract@2"
 
@@ -70,6 +70,15 @@ class ProfileExtraction(BaseModel):
     work_mode: Literal["onsite", "hybrid", "remote", "any"] = Field(
         default="any", description="Only set when the CV states a preference."
     )
+
+    @model_validator(mode="after")
+    def _not_empty(self) -> ProfileExtraction:
+        # Models occasionally return a valid but blank profile for a perfectly
+        # readable CV. Rejecting it here makes it count as a failed reply, so the
+        # next model in the fallback chain tries, and it is never cached.
+        if not (self.skills or self.roles or self.education or self.projects):
+            raise ValueError("The extraction is empty: no skills, roles, education or projects.")
+        return self
 
 
 _SYSTEM = """You extract a structured profile from a CV for a job-matching tool.
